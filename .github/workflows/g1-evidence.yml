@@ -25,6 +25,13 @@ jobs:
           persist-credentials: false
           fetch-depth: 1
 
+      - name: Run G1-F005 principal provenance regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          python -m unittest -v tests.test_g1_f005
+
       - name: Bind and execute G1 evidence
         shell: bash
         run: |

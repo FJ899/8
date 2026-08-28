@@ -14,6 +14,11 @@ class Principal:
 
 
 @dataclass(frozen=True)
+class AuthenticationContext:
+    context_id: str
+
+
+@dataclass(frozen=True)
 class AuthorityRoot:
     root_id: str
     active: Optional[bool] = True
@@ -110,13 +115,14 @@ class StartResult:
 class Kernel:
     """G1-only authority kernel with a durable SQLite control ledger.
 
-    `trusted_principal` is the abstract trusted authenticated-context input
-    permitted by G1. Request-declared identity and authority-shaped request data
-    are never consulted as authoritative state.
+    Authentication context bindings are trusted reference-model state established
+    independently of ActionRequest. Request-declared identity and authority-shaped
+    request data are never consulted as authoritative identity or authority state.
     """
 
     _SNAPSHOT_TABLES = (
         "principals",
+        "authentication_contexts",
         "authority_roots",
         "effect_intents",
         "effect_contracts",
@@ -155,6 +161,12 @@ class Kernel:
 
                 CREATE TABLE IF NOT EXISTS principals (
                     principal_id TEXT PRIMARY KEY
+                );
+
+                CREATE TABLE IF NOT EXISTS authentication_contexts (
+                    context_id TEXT PRIMARY KEY,
+                    principal_id TEXT NOT NULL REFERENCES principals(principal_id),
+                    valid INTEGER NULL CHECK (valid IN (0, 1) OR valid IS NULL)
                 );
 
                 CREATE TABLE IF NOT EXISTS authority_roots (
@@ -230,6 +242,35 @@ class Kernel:
             )
         finally:
             connection.close()
+
+    def establish_authentication_context(
+        self,
+        context: AuthenticationContext,
+        principal: Principal,
+        *,
+        valid: Optional[bool] = True,
+    ) -> None:
+        connection = self._connect()
+        try:
+            connection.execute(
+                """
+                INSERT INTO authentication_contexts(context_id, principal_id, valid)
+                VALUES (?, ?, ?)
+                """,
+                (context.context_id, principal.principal_id, self._db_bool(valid)),
+            )
+        finally:
+            connection.close()
+
+    def set_authentication_context_valid(
+        self,
+        context_id: str,
+        valid: Optional[bool],
+    ) -> None:
+        self._update_one(
+            "UPDATE authentication_contexts SET valid = ? WHERE context_id = ?",
+            (self._db_bool(valid), context_id),
+        )
 
     def add_authority_root(self, root: AuthorityRoot) -> None:
         connection = self._connect()
@@ -317,12 +358,49 @@ class Kernel:
         finally:
             connection.close()
 
-    def may(self, trusted_principal: Principal, request: ActionRequest) -> MayResult:
+    def _resolve_authenticated_principal(
+        self,
+        connection: sqlite3.Connection,
+        authentication_context: AuthenticationContext | None,
+    ) -> tuple[Optional[str], Optional[str]]:
+        if authentication_context is None:
+            return None, "missing_authentication_context"
+        if not isinstance(authentication_context, AuthenticationContext):
+            return None, "invalid_authentication_context"
+
+        row = connection.execute(
+            """
+            SELECT c.principal_id, c.valid
+            FROM authentication_contexts AS c
+            JOIN principals AS p ON p.principal_id = c.principal_id
+            WHERE c.context_id = ?
+            """,
+            (authentication_context.context_id,),
+        ).fetchone()
+        if row is None:
+            return None, "unresolvable_authentication_context"
+        if row["valid"] is None:
+            return None, "unknown_authentication_context_fact"
+        if row["valid"] != 1:
+            return None, "invalid_authentication_context"
+        return str(row["principal_id"]), None
+
+    def may(
+        self,
+        authentication_context: AuthenticationContext | None,
+        request: ActionRequest,
+    ) -> MayResult:
         connection = self._connect()
         try:
+            principal_id, context_error = self._resolve_authenticated_principal(
+                connection,
+                authentication_context,
+            )
+            if principal_id is None:
+                return MayResult(False, context_error or "invalid_authentication_context")
             return self._may_on_connection(
                 connection,
-                trusted_principal,
+                principal_id,
                 request,
                 int(self._clock()),
             )
@@ -332,17 +410,10 @@ class Kernel:
     def _may_on_connection(
         self,
         connection: sqlite3.Connection,
-        trusted_principal: Principal,
+        principal_id: str,
         request: ActionRequest,
         now: int,
     ) -> MayResult:
-        principal = connection.execute(
-            "SELECT principal_id FROM principals WHERE principal_id = ?",
-            (trusted_principal.principal_id,),
-        ).fetchone()
-        if principal is None:
-            return MayResult(False, "unknown_trusted_principal")
-
         intent = connection.execute(
             "SELECT intent_id FROM effect_intents WHERE intent_id = ?",
             (request.intent_id,),
@@ -370,7 +441,7 @@ class Kernel:
             WHERE g.principal_id = ? AND g.intent_id = ?
             ORDER BY g.grant_id
             """,
-            (trusted_principal.principal_id, request.intent_id),
+            (principal_id, request.intent_id),
         ).fetchall()
 
         if not rows:
@@ -413,15 +484,26 @@ class Kernel:
         self,
         request: ActionRequest,
         *,
-        trusted_principal: Principal,
+        authentication_context: AuthenticationContext | None = None,
     ) -> AuthorizationResult:
         connection = self._connect()
         try:
             connection.execute("BEGIN IMMEDIATE")
+            principal_id, context_error = self._resolve_authenticated_principal(
+                connection,
+                authentication_context,
+            )
+            if principal_id is None:
+                connection.execute("ROLLBACK")
+                return AuthorizationResult(
+                    False,
+                    context_error or "invalid_authentication_context",
+                )
+
             now = int(self._clock())
             decision = self._may_on_connection(
                 connection,
-                trusted_principal,
+                principal_id,
                 request,
                 now,
             )
@@ -432,7 +514,7 @@ class Kernel:
             authorization = ActionAuthorization(
                 authorization_id=str(uuid.uuid4()),
                 request_id=request.request_id,
-                principal_id=trusted_principal.principal_id,
+                principal_id=principal_id,
                 grant_id=decision.grant_id,
                 intent_id=request.intent_id,
                 contract_id=request.contract_id,
