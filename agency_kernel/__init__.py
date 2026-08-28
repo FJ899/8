@@ -18,7 +18,7 @@ from .g1 import (
 
 
 class Kernel(_Kernel):
-    """G1 kernel with kernel-controlled trusted fixture identity provenance."""
+    """G1 kernel with independently established trusted fixture identity provenance."""
 
     def __init__(self, *args, **kwargs):
         self._trusted_fixture_contexts = {}
@@ -34,12 +34,10 @@ class Kernel(_Kernel):
     ) -> None:
         super().establish_authentication_context(context, principal, valid=valid)
         self._trusted_fixture_contexts[id(context)] = context
+        self._fixture_principal_contexts[id(principal)] = context
 
     def add_principal(self, principal: Principal) -> None:
         super().add_principal(principal)
-        context = AuthenticationContext(f"fixture:{id(principal)}:{id(self)}")
-        self.establish_authentication_context(context, principal)
-        self._fixture_principal_contexts[id(principal)] = context
 
     def _trusted_context(self, value):
         if isinstance(value, AuthenticationContext):
