@@ -9,6 +9,7 @@ from pathlib import Path
 from agency_kernel import (
     ActionAuthorization,
     ActionRequest,
+    AuthenticationContext,
     AuthorityGrant,
     AuthorityRoot,
     EffectContract,
@@ -36,11 +37,15 @@ class G1SemanticIntegrityTests(unittest.TestCase):
         self.root = AuthorityRoot("root")
         self.alice = Principal("alice")
         self.mallory = Principal("mallory")
+        self.alice_context = AuthenticationContext("fixture-session-alice")
+        self.mallory_context = AuthenticationContext("fixture-session-mallory")
         self.intent = EffectIntent("intent.read", "bounded-reference-intent")
         self.contract = EffectContract("contract.read", self.intent.intent_id)
         self.kernel.add_authority_root(self.root)
         self.kernel.add_principal(self.alice)
         self.kernel.add_principal(self.mallory)
+        self.kernel.establish_authentication_context(self.alice_context, self.alice)
+        self.kernel.establish_authentication_context(self.mallory_context, self.mallory)
         self.kernel.add_effect_intent(self.intent)
         self.kernel.add_effect_contract(self.contract)
 
@@ -79,11 +84,11 @@ class G1SemanticIntegrityTests(unittest.TestCase):
     def test_positive_legal_trace_is_durable_and_single_use(self) -> None:
         self.grant_for(self.alice)
         request = self.request()
-        may = self.kernel.may(self.alice, request)
+        may = self.kernel.may(self.alice_context, request)
         self.assertTrue(may.allowed)
         self.assertEqual(may.reason, "may")
         authorization_result = self.kernel.authorize(
-            request, trusted_principal=self.alice
+            request, authentication_context=self.alice_context
         )
         self.assertTrue(authorization_result.allowed)
         authorization = authorization_result.authorization
@@ -115,28 +120,36 @@ class G1SemanticIntegrityTests(unittest.TestCase):
             declared_principal=self.alice.principal_id,
             untrusted_authority=trusted_grant,
         )
-        result = self.kernel.authorize(hostile, trusted_principal=self.mallory)
+        result = self.kernel.authorize(
+            hostile, authentication_context=self.mallory_context
+        )
         self.assertFalse(result.allowed)
         self.assertEqual(result.reason, "authority_absent")
         self.assertEqual(self.kernel.snapshot()["action_authorizations"], [])
 
     def test_invalid_grant_denies(self) -> None:
         self.grant_for(self.alice, validity=False)
-        result = self.kernel.authorize(self.request(), trusted_principal=self.alice)
+        result = self.kernel.authorize(
+            self.request(), authentication_context=self.alice_context
+        )
         self.assertFalse(result.allowed)
         self.assertEqual(result.reason, "authority_invalid")
         self.assertEqual(self.kernel.snapshot()["action_authorizations"], [])
 
     def test_expired_grant_denies(self) -> None:
         self.grant_for(self.alice, expires_at=100)
-        result = self.kernel.authorize(self.request(), trusted_principal=self.alice)
+        result = self.kernel.authorize(
+            self.request(), authentication_context=self.alice_context
+        )
         self.assertFalse(result.allowed)
         self.assertEqual(result.reason, "authority_expired")
         self.assertEqual(self.kernel.snapshot()["action_authorizations"], [])
 
     def test_revoked_grant_denies(self) -> None:
         self.grant_for(self.alice, revoked=True)
-        result = self.kernel.authorize(self.request(), trusted_principal=self.alice)
+        result = self.kernel.authorize(
+            self.request(), authentication_context=self.alice_context
+        )
         self.assertFalse(result.allowed)
         self.assertEqual(result.reason, "authority_revoked")
         self.assertEqual(self.kernel.snapshot()["action_authorizations"], [])
@@ -153,7 +166,7 @@ class G1SemanticIntegrityTests(unittest.TestCase):
         before = self.kernel.snapshot()
         result = self.kernel.authorize(
             self.request(untrusted_authority=hostile_grant),
-            trusted_principal=self.mallory,
+            authentication_context=self.mallory_context,
         )
         after = self.kernel.snapshot()
         self.assertFalse(result.allowed)
@@ -180,7 +193,9 @@ class G1SemanticIntegrityTests(unittest.TestCase):
         self.assertFalse(rejected.allowed)
         self.assertEqual(rejected.reason, "forged_authorization")
 
-        issued = self.kernel.authorize(self.request(), trusted_principal=self.alice)
+        issued = self.kernel.authorize(
+            self.request(), authentication_context=self.alice_context
+        )
         self.assertTrue(issued.allowed)
         authorization = issued.authorization
         altered = replace(authorization, principal_id=self.mallory.principal_id)
@@ -194,7 +209,9 @@ class G1SemanticIntegrityTests(unittest.TestCase):
 
     def test_replay_after_successful_consume_never_creates_second_attempt(self) -> None:
         self.grant_for(self.alice)
-        issued = self.kernel.authorize(self.request(), trusted_principal=self.alice)
+        issued = self.kernel.authorize(
+            self.request(), authentication_context=self.alice_context
+        )
         first = self.kernel.start_attempt(issued.authorization)
         second = self.kernel.start_attempt(issued.authorization)
         self.assertTrue(first.allowed)
@@ -207,7 +224,9 @@ class G1SemanticIntegrityTests(unittest.TestCase):
 
     def test_double_consume_competition_yields_at_most_one_valid_attempt(self) -> None:
         self.grant_for(self.alice)
-        issued = self.kernel.authorize(self.request(), trusted_principal=self.alice)
+        issued = self.kernel.authorize(
+            self.request(), authentication_context=self.alice_context
+        )
         authorization = issued.authorization
         barrier = threading.Barrier(3)
         results = []
@@ -235,7 +254,9 @@ class G1SemanticIntegrityTests(unittest.TestCase):
 
     def test_authority_invalidation_before_start_denies_without_consuming(self) -> None:
         grant = self.grant_for(self.alice)
-        issued = self.kernel.authorize(self.request(), trusted_principal=self.alice)
+        issued = self.kernel.authorize(
+            self.request(), authentication_context=self.alice_context
+        )
         self.assertTrue(issued.allowed)
         self.kernel.set_grant_revoked(grant.grant_id, True)
         start = self.kernel.start_attempt(issued.authorization)
@@ -248,14 +269,18 @@ class G1SemanticIntegrityTests(unittest.TestCase):
 
     def test_unknown_required_pre_effect_authority_fact_denies(self) -> None:
         self.grant_for(self.alice, validity=None)
-        result = self.kernel.authorize(self.request(), trusted_principal=self.alice)
+        result = self.kernel.authorize(
+            self.request(), authentication_context=self.alice_context
+        )
         self.assertFalse(result.allowed)
         self.assertEqual(result.reason, "unknown_authority_fact")
         self.assertEqual(self.kernel.snapshot()["action_authorizations"], [])
 
     def test_unknown_authority_fact_at_start_denies_without_consuming(self) -> None:
         grant = self.grant_for(self.alice)
-        issued = self.kernel.authorize(self.request(), trusted_principal=self.alice)
+        issued = self.kernel.authorize(
+            self.request(), authentication_context=self.alice_context
+        )
         self.assertTrue(issued.allowed)
         self.kernel.set_grant_validity(grant.grant_id, None)
         start = self.kernel.start_attempt(issued.authorization)
