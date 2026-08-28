@@ -1,17 +1,47 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
+import io
 import json
-import threading
+import os
+import platform
+import sqlite3
+import subprocess
 import sys
+import threading
+import unittest
 from pathlib import Path
 from typing import Any, Dict
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
+_IMPORT_ENV_KEYS = ("PYTHONHOME", "PYTHONPATH", "PYTHONUSERBASE", "PYTHONNOUSERSITE")
 
+
+def _ensure_isolated() -> None:
+    if sys.flags.isolated:
+        return
+    env = os.environ.copy()
+    env["AK_G1_ORIGINAL_ARGV"] = json.dumps(sys.argv)
+    env["AK_G1_ORIGINAL_PYTHONPATH"] = env.get("PYTHONPATH", "<unset>")
+    for key in ("PYTHONHOME", "PYTHONPATH", "PYTHONUSERBASE"):
+        env.pop(key, None)
+    env["PYTHONNOUSERSITE"] = "1"
+    os.execve(
+        sys.executable,
+        [sys.executable, "-I", str(Path(__file__).resolve()), *sys.argv[1:]],
+        env,
+    )
+
+
+_ensure_isolated()
+os.chdir(REPO_ROOT)
+sys.path.insert(0, str(REPO_ROOT))
+
+import agency_kernel
+import agency_kernel.g1 as agency_kernel_g1
+import tests.test_g1 as test_g1
 from agency_kernel import (
     ActionAuthorization,
     ActionRequest,
@@ -24,12 +54,158 @@ from agency_kernel import (
 )
 
 
+class ProvenanceError(RuntimeError):
+    pass
+
+
 class ManualClock:
     def __init__(self, value: int = 100):
         self.value = value
 
     def __call__(self) -> int:
         return self.value
+
+
+def _git(*args: str) -> str:
+    completed = subprocess.run(
+        ["git", *args],
+        cwd=REPO_ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if completed.returncode != 0:
+        raise ProvenanceError(
+            f"git {' '.join(args)} failed ({completed.returncode}): {completed.stderr.strip()}"
+        )
+    return completed.stdout.strip()
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def git_blob_id(path: Path) -> str:
+    data = path.read_bytes()
+    header = f"blob {len(data)}\0".encode("ascii")
+    return hashlib.sha1(header + data).hexdigest()
+
+
+def expected_blob(path: str) -> str:
+    line = _git("ls-tree", "HEAD", "--", path)
+    if not line:
+        raise ProvenanceError(f"candidate tree has no blob for {path}")
+    metadata, actual_path = line.split("\t", 1)
+    mode, object_type, blob = metadata.split()
+    if object_type != "blob" or actual_path != path:
+        raise ProvenanceError(f"unexpected tree entry for {path}: {line}")
+    return blob
+
+
+def module_provenance(name: str, module: Any, repo_path: str) -> Dict[str, Any]:
+    origin = getattr(module, "__file__", None)
+    if not origin:
+        raise ProvenanceError(f"{name} has no __file__")
+    origin_path = Path(origin).resolve()
+    expected_path = (REPO_ROOT / repo_path).resolve()
+    expected = expected_blob(repo_path)
+    materialized = git_blob_id(expected_path)
+    loaded = git_blob_id(origin_path)
+    observation = {
+        "module": name,
+        "repo_path": repo_path,
+        "origin": str(origin_path),
+        "expected_origin": str(expected_path),
+        "expected_candidate_blob": expected,
+        "materialized_git_blob": materialized,
+        "loaded_git_blob": loaded,
+        "materialized_sha256": sha256(expected_path),
+        "loaded_sha256": sha256(origin_path),
+    }
+    if origin_path != expected_path:
+        raise ProvenanceError(f"{name} origin mismatch: {origin_path} != {expected_path}")
+    if materialized != expected:
+        raise ProvenanceError(
+            f"materialized {repo_path} does not match candidate blob: {materialized} != {expected}"
+        )
+    if loaded != expected:
+        raise ProvenanceError(
+            f"loaded {name} does not match candidate blob: {loaded} != {expected}"
+        )
+    return observation
+
+
+def capture_runtime_provenance() -> Dict[str, Any]:
+    head = _git("rev-parse", "HEAD")
+    tree = _git("rev-parse", "HEAD^{tree}")
+    modules = {
+        "agency_kernel": module_provenance(
+            "agency_kernel", agency_kernel, "agency_kernel/__init__.py"
+        ),
+        "agency_kernel.g1": module_provenance(
+            "agency_kernel.g1", agency_kernel_g1, "agency_kernel/g1.py"
+        ),
+        "tests.test_g1": module_provenance(
+            "tests.test_g1", test_g1, "tests/test_g1.py"
+        ),
+    }
+    script_expected = expected_blob("scripts/capture_g1_evidence.py")
+    script_materialized = git_blob_id(Path(__file__).resolve())
+    if script_materialized != script_expected:
+        raise ProvenanceError(
+            "evidence script does not match candidate blob: "
+            f"{script_materialized} != {script_expected}"
+        )
+    import_environment = {key: os.environ.get(key, "<unset>") for key in _IMPORT_ENV_KEYS}
+    return {
+        "repository_root": str(REPO_ROOT),
+        "cwd": os.getcwd(),
+        "candidate_head": head,
+        "candidate_tree": tree,
+        "original_command_argv": json.loads(os.environ.get("AK_G1_ORIGINAL_ARGV", "[]")),
+        "effective_command_argv": [sys.executable, "-I", str(Path(__file__).resolve()), *sys.argv[1:]],
+        "original_pythonpath": os.environ.get("AK_G1_ORIGINAL_PYTHONPATH", "<unknown>"),
+        "import_environment": import_environment,
+        "sys_path": list(sys.path),
+        "isolated": bool(sys.flags.isolated),
+        "no_user_site": bool(sys.flags.no_user_site),
+        "python_version": sys.version,
+        "sqlite_version": sqlite3.sqlite_version,
+        "platform": platform.platform(),
+        "os_name": os.name,
+        "modules": modules,
+        "evidence_script": {
+            "origin": str(Path(__file__).resolve()),
+            "expected_candidate_blob": script_expected,
+            "materialized_git_blob": script_materialized,
+            "sha256": sha256(Path(__file__).resolve()),
+        },
+    }
+
+
+def run_g1_tests() -> Dict[str, Any]:
+    suite = unittest.defaultTestLoader.loadTestsFromModule(test_g1)
+    runner_stream = io.StringIO()
+    stdout = io.StringIO()
+    stderr = io.StringIO()
+    with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+        result = unittest.TextTestRunner(stream=runner_stream, verbosity=2).run(suite)
+    return {
+        "successful": result.wasSuccessful(),
+        "tests_run": result.testsRun,
+        "failures": len(result.failures),
+        "errors": len(result.errors),
+        "skipped": len(result.skipped),
+        "runner_output": runner_stream.getvalue(),
+        "stdout": stdout.getvalue(),
+        "stderr": stderr.getvalue(),
+        "exit_code": 0 if result.wasSuccessful() else 1,
+    }
 
 
 def seed(db_path: Path, *, grant: AuthorityGrant | None = None):
@@ -67,10 +243,7 @@ def active_grant(root: AuthorityRoot, principal: Principal, intent: EffectIntent
 
 
 def result_dict(result: Any) -> Dict[str, Any]:
-    return {
-        "allowed": result.allowed,
-        "reason": result.reason,
-    }
+    return {"allowed": result.allowed, "reason": result.reason}
 
 
 def run_scenarios(output_dir: Path) -> Dict[str, Any]:
@@ -85,9 +258,7 @@ def run_scenarios(output_dir: Path) -> Dict[str, Any]:
     start = kernel.start_attempt(auth.authorization)
     reopened = Kernel(db, clock=clock)
     evidence["scenarios"]["positive_legal_trace"] = {
-        "may": result_dict(may),
-        "authorize": result_dict(auth),
-        "start": result_dict(start),
+        "may": result_dict(may), "authorize": result_dict(auth), "start": result_dict(start),
         "reopened_snapshot": reopened.snapshot(),
     }
 
@@ -95,17 +266,9 @@ def run_scenarios(output_dir: Path) -> Dict[str, Any]:
     kernel, clock, root, alice, mallory, intent, contract = seed(db)
     trusted = active_grant(root, alice, intent)
     kernel.add_authority_grant(trusted)
-    hostile_request = request(
-        intent,
-        contract,
-        declared_principal=alice.principal_id,
-        untrusted_authority=trusted,
-    )
+    hostile_request = request(intent, contract, declared_principal=alice.principal_id, untrusted_authority=trusted)
     outcome = kernel.authorize(hostile_request, trusted_principal=mallory)
-    evidence["scenarios"]["request_self_authorization"] = {
-        "outcome": result_dict(outcome),
-        "snapshot": kernel.snapshot(),
-    }
+    evidence["scenarios"]["request_self_authorization"] = {"outcome": result_dict(outcome), "snapshot": kernel.snapshot()}
 
     for name, grant in (
         ("invalid_grant", AuthorityGrant("grant", "root", "alice", "intent.read", validity=False)),
@@ -116,36 +279,21 @@ def run_scenarios(output_dir: Path) -> Dict[str, Any]:
         db = output_dir / f"{name}.sqlite"
         kernel, clock, root, alice, mallory, intent, contract = seed(db, grant=grant)
         outcome = kernel.authorize(request(intent, contract), trusted_principal=alice)
-        evidence["scenarios"][name] = {
-            "outcome": result_dict(outcome),
-            "snapshot": kernel.snapshot(),
-        }
+        evidence["scenarios"][name] = {"outcome": result_dict(outcome), "snapshot": kernel.snapshot()}
 
     db = output_dir / "untrusted_input.sqlite"
     kernel, clock, root, alice, mallory, intent, contract = seed(db)
     hostile_grant = AuthorityGrant("hostile-grant", "hostile-root", mallory.principal_id, intent.intent_id)
-    outcome = kernel.authorize(
-        request(intent, contract, untrusted_authority=hostile_grant),
-        trusted_principal=mallory,
-    )
-    evidence["scenarios"]["untrusted_proof_bearing_input"] = {
-        "outcome": result_dict(outcome),
-        "snapshot": kernel.snapshot(),
-    }
+    outcome = kernel.authorize(request(intent, contract, untrusted_authority=hostile_grant), trusted_principal=mallory)
+    evidence["scenarios"]["untrusted_proof_bearing_input"] = {"outcome": result_dict(outcome), "snapshot": kernel.snapshot()}
 
     db = output_dir / "forged_authorization.sqlite"
     kernel, clock, root, alice, mallory, intent, contract = seed(db)
     grant = active_grant(root, alice, intent)
     kernel.add_authority_grant(grant)
-    forged = ActionAuthorization(
-        "forged-id", "request-1", alice.principal_id, grant.grant_id,
-        intent.intent_id, contract.contract_id, 100
-    )
+    forged = ActionAuthorization("forged-id", "request-1", alice.principal_id, grant.grant_id, intent.intent_id, contract.contract_id, 100)
     outcome = kernel.start_attempt(forged)
-    evidence["scenarios"]["forged_authorization"] = {
-        "outcome": result_dict(outcome),
-        "snapshot": kernel.snapshot(),
-    }
+    evidence["scenarios"]["forged_authorization"] = {"outcome": result_dict(outcome), "snapshot": kernel.snapshot()}
 
     db = output_dir / "replay.sqlite"
     kernel, clock, root, alice, mallory, intent, contract = seed(db)
@@ -153,11 +301,7 @@ def run_scenarios(output_dir: Path) -> Dict[str, Any]:
     auth = kernel.authorize(request(intent, contract), trusted_principal=alice)
     first = kernel.start_attempt(auth.authorization)
     replay = kernel.start_attempt(auth.authorization)
-    evidence["scenarios"]["replay"] = {
-        "first": result_dict(first),
-        "replay": result_dict(replay),
-        "snapshot": kernel.snapshot(),
-    }
+    evidence["scenarios"]["replay"] = {"first": result_dict(first), "replay": result_dict(replay), "snapshot": kernel.snapshot()}
 
     db = output_dir / "double_consume.sqlite"
     kernel, clock, root, alice, mallory, intent, contract = seed(db)
@@ -179,10 +323,7 @@ def run_scenarios(output_dir: Path) -> Dict[str, Any]:
     barrier.wait()
     for thread in threads:
         thread.join()
-    evidence["scenarios"]["double_consume"] = {
-        "outcomes": [result_dict(value) for value in results],
-        "snapshot": Kernel(db, clock=clock).snapshot(),
-    }
+    evidence["scenarios"]["double_consume"] = {"outcomes": [result_dict(value) for value in results], "snapshot": Kernel(db, clock=clock).snapshot()}
 
     db = output_dir / "invalidation_before_start.sqlite"
     kernel, clock, root, alice, mallory, intent, contract = seed(db)
@@ -191,36 +332,27 @@ def run_scenarios(output_dir: Path) -> Dict[str, Any]:
     auth = kernel.authorize(request(intent, contract), trusted_principal=alice)
     kernel.set_grant_revoked(grant.grant_id, True)
     outcome = kernel.start_attempt(auth.authorization)
-    evidence["scenarios"]["authority_invalidation_before_start"] = {
-        "outcome": result_dict(outcome),
-        "snapshot": kernel.snapshot(),
-    }
+    evidence["scenarios"]["authority_invalidation_before_start"] = {"outcome": result_dict(outcome), "snapshot": kernel.snapshot()}
 
-    evidence["scenarios"]["can_to_may"] = {
-        "applicable": False,
-        "reason": "optional inert Capability/CAN not implemented",
-    }
+    evidence["scenarios"]["can_to_may"] = {"applicable": False, "reason": "optional inert Capability/CAN not implemented"}
     return evidence
-
-
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--output-dir", required=True)
     args = parser.parse_args()
-    output_dir = Path(args.output_dir)
+    output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    evidence = run_scenarios(output_dir)
+    provenance = capture_runtime_provenance()
+    test_outcome = run_g1_tests()
+    state = run_scenarios(output_dir)
+    state["runtime_provenance"] = provenance
+    state["test_execution"] = test_outcome
+
     json_path = output_dir / "g1_state_evidence.json"
-    json_path.write_text(json.dumps(evidence, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    json_path.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
     hashes = {}
     for path in sorted(output_dir.iterdir()):
@@ -229,7 +361,9 @@ def main() -> None:
     hash_path = output_dir / "SHA256SUMS.json"
     hash_path.write_text(json.dumps(hashes, indent=2, sort_keys=True) + "\n", encoding="utf-8")
 
-    print(json.dumps({"evidence": str(json_path), "hashes": str(hash_path)}, sort_keys=True))
+    print(json.dumps({"evidence": str(json_path), "hashes": str(hash_path), "tests_exit_code": test_outcome["exit_code"]}, sort_keys=True))
+    if not test_outcome["successful"]:
+        raise SystemExit(test_outcome["exit_code"])
 
 
 if __name__ == "__main__":
