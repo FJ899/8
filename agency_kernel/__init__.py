@@ -18,37 +18,39 @@ from .g1 import (
 
 
 class Kernel(_Kernel):
-    """G1 kernel with trusted fixture identity provenance compatibility.
-
-    A Principal becomes usable as the G1 trusted fixture premise only when that
-    exact object was registered with this Kernel via add_principal(). Merely
-    constructing another Principal with the same principal_id establishes no
-    authenticated provenance. authorize() resolves MAY through the resulting
-    kernel-controlled AuthenticationContext rather than through caller identity
-    data or ActionRequest.
-    """
+    """G1 kernel with kernel-controlled trusted fixture identity provenance."""
 
     def __init__(self, *args, **kwargs):
-        self._fixture_authentication_contexts = {}
+        self._trusted_fixture_contexts = {}
+        self._fixture_principal_contexts = {}
         super().__init__(*args, **kwargs)
+
+    def establish_authentication_context(
+        self,
+        context: AuthenticationContext,
+        principal: Principal,
+        *,
+        valid=True,
+    ) -> None:
+        super().establish_authentication_context(context, principal, valid=valid)
+        self._trusted_fixture_contexts[id(context)] = context
 
     def add_principal(self, principal: Principal) -> None:
         super().add_principal(principal)
-        context = AuthenticationContext(f"fixture:{id(principal)}")
+        context = AuthenticationContext(f"fixture:{id(principal)}:{id(self)}")
         self.establish_authentication_context(context, principal)
-        self._fixture_authentication_contexts[id(principal)] = context
+        self._fixture_principal_contexts[id(principal)] = context
 
-    def _fixture_context(self, principal):
-        if not isinstance(principal, Principal):
-            return None
-        return self._fixture_authentication_contexts.get(id(principal))
+    def _trusted_context(self, value):
+        if isinstance(value, AuthenticationContext):
+            registered = self._trusted_fixture_contexts.get(id(value))
+            return value if registered is value else None
+        if isinstance(value, Principal):
+            return self._fixture_principal_contexts.get(id(value))
+        return None
 
     def may(self, trusted_identity, request):
-        if isinstance(trusted_identity, AuthenticationContext):
-            context = trusted_identity
-        else:
-            context = self._fixture_context(trusted_identity)
-        return super().may(context, request)
+        return super().may(self._trusted_context(trusted_identity), request)
 
     def authorize(
         self,
@@ -57,10 +59,11 @@ class Kernel(_Kernel):
         authentication_context: AuthenticationContext | None = None,
         trusted_principal=None,
     ) -> AuthorizationResult:
-        context = authentication_context
-        if context is None and trusted_principal is not None:
-            context = self._fixture_context(trusted_principal)
-        return super().authorize(request, authentication_context=context)
+        supplied = authentication_context if authentication_context is not None else trusted_principal
+        return super().authorize(
+            request,
+            authentication_context=self._trusted_context(supplied),
+        )
 
 
 __all__ = [
