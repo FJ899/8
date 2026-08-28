@@ -6,6 +6,7 @@ from pathlib import Path
 
 from agency_kernel import (
     ActionRequest,
+    AuthenticationContext,
     AuthorityGrant,
     AuthorityRoot,
     EffectContract,
@@ -63,7 +64,9 @@ class G1F005PrincipalProvenanceRegression(unittest.TestCase):
         self.assertIsNone(result.authorization)
         self.assertEqual(self.kernel.snapshot()["action_authorizations"], [])
 
-    def test_registered_fixture_identity_resolves_independently_of_request(self) -> None:
+    def test_authenticated_fixture_identity_resolves_independently_of_request(self) -> None:
+        context = AuthenticationContext("fixture-session-alice")
+        self.kernel.establish_authentication_context(context, self.alice)
         hostile_request = ActionRequest(
             "request-2",
             self.intent.intent_id,
@@ -73,7 +76,7 @@ class G1F005PrincipalProvenanceRegression(unittest.TestCase):
         )
         result = self.kernel.authorize(
             hostile_request,
-            trusted_principal=self.alice,
+            authentication_context=context,
         )
         self.assertTrue(result.allowed)
         self.assertEqual(result.authorization.principal_id, "alice")
