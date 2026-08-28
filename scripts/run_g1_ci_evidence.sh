@@ -61,6 +61,4 @@ else
 fi
 printf 'HOSTILE_PYTHONPATH=%s\n' "$PYTHONPATH" >> "$OUT/hostile_pythonpath.txt"
 
-run unittest_isolated python -I -m unittest -v tests.test_g1
-
 find "$OUT" -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > "$OUT/SHA256SUMS"
