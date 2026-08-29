@@ -120,6 +120,19 @@ printf '%s\n' "$HOOK_RC" > "$OUT/hostile_hook.exit"
 [[ "$REQ_REF_RC" -ne 0 && "$HOST_REF_RC" -ne 0 && "$REQ_STORAGE_RC" -ne 0 && "$HOOK_RC" -ne 0 ]]
 [[ "$(git --git-dir "$REPO" rev-parse "$REF")" = "$POSITIVE_OID" ]]
 
+# Alternate broker-root /proc path cannot bypass protected-repository capability separation.
+PROC_REPO="/proc/$BROKER_PID/root$REPO"
+set +e
+run_as g4hostile git --git-dir "$PROC_REPO" update-ref "$REF" "$INITIAL_OID" "$POSITIVE_OID" >"$OUT/proc_direct_ref.stdout" 2>"$OUT/proc_direct_ref.stderr"
+PROC_REF_RC=$?
+run_as g4hostile sh -c "printf proc-attack >> '$PROC_REPO/packed-refs'" >"$OUT/proc_storage.stdout" 2>"$OUT/proc_storage.stderr"
+PROC_STORAGE_RC=$?
+set -e
+printf '%s\n' "$PROC_REF_RC" > "$OUT/proc_direct_ref.exit"
+printf '%s\n' "$PROC_STORAGE_RC" > "$OUT/proc_storage.exit"
+[[ "$PROC_REF_RC" -ne 0 && "$PROC_STORAGE_RC" -ne 0 ]]
+[[ "$(git --git-dir "$REPO" rev-parse "$REF")" = "$POSITIVE_OID" ]]
+
 # Forged principal/credential-shaped input cannot authenticate a hostile peer.
 run_as g4hostile python "$CLIENT" --socket "$SOCKET" --request \
   "{\"action\":\"mutate\",\"declared_principal\":\"alice\",\"broker_token\":\"forged\",\"files\":{\"A.txt\":\"forged\"},\"possible_effects\":[\"$REF_EFFECT\",\"$A_EFFECT\"]}" \
