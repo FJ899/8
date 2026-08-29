@@ -16,7 +16,7 @@ concurrency:
 jobs:
   implementation-checks:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Checkout exact run SHA
         uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
@@ -30,8 +30,26 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          printf 'HEAD=%s\n' "$(git rev-parse HEAD)"
-          printf 'TREE=%s\n' "$(git rev-parse HEAD^{tree})"
+          mkdir -p g2-run-metadata
+          {
+            printf 'GITHUB_REPOSITORY=%s\n' "$GITHUB_REPOSITORY"
+            printf 'GITHUB_SHA=%s\n' "$GITHUB_SHA"
+            printf 'GITHUB_RUN_ID=%s\n' "$GITHUB_RUN_ID"
+            printf 'GITHUB_RUN_ATTEMPT=%s\n' "$GITHUB_RUN_ATTEMPT"
+            printf 'HEAD=%s\n' "$(git rev-parse HEAD)"
+            printf 'TREE=%s\n' "$(git rev-parse HEAD^{tree})"
+            printf 'UID=%s\n' "$(id -u)"
+            printf 'GID=%s\n' "$(id -g)"
+            printf 'UNAME=%s\n' "$(uname -a)"
+            printf 'PYTHON=%s\n' "$(python --version 2>&1)"
+            printf 'WORKFLOW_BLOB=%s\n' "$(git rev-parse HEAD:.github/workflows/g2-evidence.yml)"
+            printf 'G2_BLOB=%s\n' "$(git rev-parse HEAD:agency_kernel/g2.py)"
+            printf 'TOPOLOGY_BLOB=%s\n' "$(git rev-parse HEAD:scripts/run_g2_topology.sh)"
+          } | tee g2-run-metadata/execution_instance.txt
+          cat /proc/self/status > g2-run-metadata/process_status.txt
+          mount > g2-run-metadata/mounts.txt
+          ip addr > g2-run-metadata/ip_addr.txt
+          ip route > g2-run-metadata/ip_route.txt
 
       - name: Re-run accepted G1 regressions
         shell: bash
@@ -48,3 +66,28 @@ jobs:
         run: |
           set -euo pipefail
           python -m unittest -v tests.test_g2
+
+      - name: Run G2 physical capability-boundary harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/run_g2_topology.sh g2-topology-evidence
+
+      - name: Hash raw G2 evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p g2-evidence
+          cp -a g2-run-metadata g2-evidence/ 2>/dev/null || true
+          cp -a g2-topology-evidence g2-evidence/ 2>/dev/null || true
+          find g2-evidence -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > g2-evidence/SHA256SUMS
+
+      - name: Upload raw G2 evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: g2-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: g2-evidence/
+          if-no-files-found: error
+          retention-days: 7
