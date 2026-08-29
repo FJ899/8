@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import gc
 import tempfile
 import unittest
 from pathlib import Path
@@ -48,7 +47,6 @@ class G1F011PrincipalIdentityReuseRegression(unittest.TestCase):
 
             former_id = id(original)
             del original
-            gc.collect()
 
             colliding = None
             for _ in range(1_000_000):
