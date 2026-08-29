@@ -93,6 +93,7 @@ class GitObservation:
     operation_digest: Optional[str]
     metadata_tree_oid: Optional[str]
     expected_old_oid: Optional[str]
+    entries: tuple[tuple[str, str, str, str], ...] = ()
     covered: bool = True
     attribution_ambiguous: bool = False
 
@@ -136,14 +137,7 @@ class SanitizedGitRepo:
             env.update(extra)
         return env
 
-    def git(
-        self,
-        *args: str,
-        input_text: Optional[str] = None,
-        check: bool = True,
-        extra_env: Optional[dict[str, str]] = None,
-        strip_output: bool = True,
-    ) -> str:
+    def git(self, *args: str, input_text: Optional[str] = None, check: bool = True, extra_env: Optional[dict[str, str]] = None, strip_output: bool = True) -> str:
         cp = subprocess.run(
             ["git", "--git-dir", str(self.repo), *args],
             input=input_text,
@@ -155,6 +149,17 @@ class SanitizedGitRepo:
         if check and cp.returncode != 0:
             raise RuntimeError(f"git_failed:{args!r}:{cp.stderr.strip()}")
         return cp.stdout.strip() if strip_output else cp.stdout
+
+    def git_bytes(self, *args: str, check: bool = True, extra_env: Optional[dict[str, str]] = None) -> bytes:
+        cp = subprocess.run(
+            ["git", "--git-dir", str(self.repo), *args],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=self._env(extra_env),
+        )
+        if check and cp.returncode != 0:
+            raise RuntimeError(f"git_failed:{args!r}:{cp.stderr.decode('utf-8', 'replace').strip()}")
+        return cp.stdout
 
     def _configure(self) -> None:
         self.git("config", "core.hooksPath", str(self.hooks_dir))
@@ -189,11 +194,24 @@ class SanitizedGitRepo:
     def tree_oid(self, commit_oid: str) -> str:
         return self.git("rev-parse", f"{commit_oid}^{{tree}}")
 
+    def tree_entries(self, commit_oid: str) -> tuple[tuple[str, str, str, str], ...]:
+        raw = self.git_bytes("ls-tree", "-r", "-z", commit_oid)
+        entries: list[tuple[str, str, str, str]] = []
+        for item in raw.split(b"\0"):
+            if not item:
+                continue
+            meta, path_raw = item.split(b"\t", 1)
+            mode_raw, type_raw, oid_raw = meta.split(b" ", 2)
+            path = path_raw.decode("utf-8", "surrogateescape")
+            entries.append((mode_raw.decode("ascii"), type_raw.decode("ascii"), oid_raw.decode("ascii"), path))
+        return tuple(sorted(entries, key=lambda x: x[3]))
+
     def list_files(self, commit_oid: str) -> tuple[tuple[str, str], ...]:
-        paths = [p for p in self.git("ls-tree", "-r", "--name-only", commit_oid).splitlines() if p]
         result: list[tuple[str, str]] = []
-        for path in paths:
-            content = self.git("show", f"{commit_oid}:{path}", strip_output=False)
+        for _mode, obj_type, oid, path in self.tree_entries(commit_oid):
+            if obj_type != "blob":
+                continue
+            content = self.git_bytes("cat-file", "blob", oid).decode("utf-8", "surrogateescape")
             result.append((path, content))
         return tuple(sorted(result))
 
@@ -221,12 +239,7 @@ class SanitizedGitRepo:
         return frozenset(line for line in out.splitlines() if line)
 
     def create_commit(self, tree_oid: str, old_oid: str, admission_id: str, operation_digest: str) -> str:
-        message = (
-            f"agency-kernel-admission:{admission_id}\n"
-            f"operation-digest:{operation_digest}\n"
-            f"tree:{tree_oid}\n"
-            f"expected-old:{old_oid}\n"
-        )
+        message = f"agency-kernel-admission:{admission_id}\noperation-digest:{operation_digest}\ntree:{tree_oid}\nexpected-old:{old_oid}\n"
         return self.git("commit-tree", tree_oid, "-p", old_oid, input_text=message)
 
     def cas_update(self, new_oid: str, expected_old_oid: str) -> bool:
@@ -269,6 +282,7 @@ class GitObserver:
             digest,
             metadata_tree,
             expected_old,
+            self.repo.tree_entries(oid),
             covered,
             attribution_ambiguous,
         )
@@ -282,9 +296,7 @@ class Kernel(G2Kernel):
         self.protected_ref = protected_ref
         super().__init__(control_db, Path(str(repo_path) + ".unused-g2-boundary"), clock=clock)
         with self._connect() as c:
-            c.execute(
-                "CREATE TABLE IF NOT EXISTS g4_execution_completions (admission_id TEXT PRIMARY KEY REFERENCES operation_admissions(admission_id), commit_oid TEXT NOT NULL, completed_at INTEGER NOT NULL)"
-            )
+            c.execute("CREATE TABLE IF NOT EXISTS g4_execution_completions (admission_id TEXT PRIMARY KEY REFERENCES operation_admissions(admission_id), commit_oid TEXT NOT NULL, completed_at INTEGER NOT NULL)")
 
     def has_control_completion(self, admission_id: str) -> bool:
         with self._connect() as c:
@@ -321,7 +333,6 @@ class Kernel(G2Kernel):
             return AdmissionResult(False, "invalid_expected_ref_state")
         if not required.issubset(operation.possible_effects):
             return AdmissionResult(False, "effect_model_underapproximation")
-
         c = self._connect()
         try:
             c.execute("BEGIN IMMEDIATE")
@@ -329,9 +340,7 @@ class Kernel(G2Kernel):
             if row is None:
                 c.execute("ROLLBACK")
                 return AdmissionResult(False, "invalid_attempt")
-            if (row["authorization_id"], row["principal_id"], row["intent_id"], row["contract_id"]) != (
-                attempt.authorization_id, attempt.principal_id, attempt.intent_id, attempt.contract_id
-            ):
+            if (row["authorization_id"], row["principal_id"], row["intent_id"], row["contract_id"]) != (attempt.authorization_id, attempt.principal_id, attempt.intent_id, attempt.contract_id):
                 c.execute("ROLLBACK")
                 return AdmissionResult(False, "forged_attempt")
             authority = self._specific_grant_status(c, row["grant_id"], row["principal_id"], row["intent_id"], int(self._clock()))
@@ -356,10 +365,7 @@ class Kernel(G2Kernel):
                 c.execute("ROLLBACK")
                 return AdmissionResult(False, "effect_envelope_exceeded")
             admission = OperationAdmission(str(uuid.uuid4()), attempt.attempt_id, capability_id, hashlib.sha256(canonical).hexdigest(), canonical)
-            c.execute(
-                "INSERT INTO operation_admissions(admission_id, attempt_id, capability_id, operation_digest, canonical_operation) VALUES (?, ?, ?, ?, ?)",
-                (admission.admission_id, admission.attempt_id, admission.capability_id, admission.operation_digest, admission.canonical_operation),
-            )
+            c.execute("INSERT INTO operation_admissions(admission_id, attempt_id, capability_id, operation_digest, canonical_operation) VALUES (?, ?, ?, ?, ?)", (admission.admission_id, admission.attempt_id, admission.capability_id, admission.operation_digest, admission.canonical_operation))
             c.execute("COMMIT")
             return AdmissionResult(True, "admitted", admission)
         except BaseException:
@@ -407,7 +413,6 @@ class Kernel(G2Kernel):
             c.execute("COMMIT")
         finally:
             c.close()
-
         current = self.git_repo.rev_parse_ref()
         if current != op.expected_old_oid:
             return GitExecutionResult(False, "stale_ref", self.protected_ref, current, current, operation_digest=digest)
@@ -456,7 +461,13 @@ class Kernel(G2Kernel):
 
     @staticmethod
     def satisfied(observation: GitObservation, expected_files: dict[str, str]) -> bool:
-        return dict(observation.files) == dict(expected_files)
+        if dict(observation.files) != dict(expected_files):
+            return False
+        expected_paths = set(expected_files)
+        entries = [entry for entry in observation.entries if entry[1] == "blob"]
+        if {entry[3] for entry in entries} != expected_paths or len(entries) != len(observation.entries):
+            return False
+        return all(mode == "100644" and obj_type == "blob" for mode, obj_type, _oid, _path in observation.entries)
 
     @staticmethod
     def accept(passed: bool, reason: str = "human_or_external_acceptance") -> AcceptanceResult:
