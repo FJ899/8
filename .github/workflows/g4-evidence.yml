@@ -46,7 +46,9 @@ jobs:
             printf 'WORKFLOW_BLOB=%s\n' "$(git rev-parse HEAD:.github/workflows/g4-evidence.yml)"
             printf 'G4_BLOB=%s\n' "$(git rev-parse HEAD:agency_kernel/g4.py)"
             printf 'G4_TEST_BLOB=%s\n' "$(git rev-parse HEAD:tests/test_g4.py)"
+            printf 'G4_CORRECTION_TEST_BLOB=%s\n' "$(git rev-parse HEAD:tests/test_g4_f001_f002.py)"
             printf 'G4_CAPTURE_BLOB=%s\n' "$(git rev-parse HEAD:scripts/capture_g4_evidence.py)"
+            printf 'G4_CORRECTION_CAPTURE_BLOB=%s\n' "$(git rev-parse HEAD:scripts/capture_g4_f001_f002.py)"
             printf 'G4_BROKER_BLOB=%s\n' "$(git rev-parse HEAD:scripts/g4_broker.py)"
             printf 'G4_TOPOLOGY_BLOB=%s\n' "$(git rev-parse HEAD:scripts/run_g4_topology.sh)"
           } | tee g4-evidence/execution_instance.txt
@@ -83,7 +85,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m unittest -v tests.test_g4 2>&1 | tee g4-evidence/g4-tests.log
+          python -m unittest -v tests.test_g4 tests.test_g4_f001_f002 2>&1 | tee g4-evidence/g4-tests.log
 
       - name: Run G4 hostile topology
         shell: bash
@@ -96,6 +98,7 @@ jobs:
         run: |
           set -euo pipefail
           python -I -c 'import runpy,sys; sys.path.insert(0,"."); sys.argv=["scripts/capture_g4_evidence.py","--output-dir","g4-evidence/state"]; runpy.run_path("scripts/capture_g4_evidence.py",run_name="__main__")' 2>&1 | tee g4-evidence/capture.log
+          python -I -c 'import runpy,sys; sys.path.insert(0,"."); sys.argv=["scripts/capture_g4_f001_f002.py","--output","g4-evidence/state/g4_f001_f002.json"]; runpy.run_path("scripts/capture_g4_f001_f002.py",run_name="__main__")' 2>&1 | tee g4-evidence/capture-f001-f002.log
 
       - name: Hash raw evidence
         if: always()
