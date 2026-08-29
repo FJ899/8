@@ -45,6 +45,7 @@ jobs:
             printf 'WORKFLOW_BLOB=%s\n' "$(git rev-parse HEAD:.github/workflows/g3-evidence.yml)"
             printf 'G3_BLOB=%s\n' "$(git rev-parse HEAD:agency_kernel/g3.py)"
             printf 'G3_TEST_BLOB=%s\n' "$(git rev-parse HEAD:tests/test_g3.py)"
+            printf 'G3_CAPTURE_BLOB=%s\n' "$(git rev-parse HEAD:scripts/capture_g3_evidence.py)"
           } | tee g3-evidence/execution_instance.txt
           cat /proc/self/status > g3-evidence/process_status.txt
           mount > g3-evidence/mounts.txt
@@ -73,6 +74,12 @@ jobs:
         run: |
           set -euo pipefail
           python -m unittest -v tests.test_g3 2>&1 | tee g3-evidence/g3-tests.log
+
+      - name: Capture deterministic G3 semantic scenarios
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/capture_g3_evidence.py --output-dir g3-evidence/state 2>&1 | tee g3-evidence/capture.log
 
       - name: Hash raw evidence
         if: always()
