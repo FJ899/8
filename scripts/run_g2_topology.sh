@@ -86,7 +86,6 @@ run_as() {
   sudo -u "$user" "$@"
 }
 
-# Positive control: authenticated OS peer uid -> exact admission -> Broker-owned effect.
 run_as g2requester python "$CLIENT" --socket "$SOCKET" --request \
   '{"action":"mutate","resource":"X","value":"positive-control","possible_effects":["MODIFY(X)"]}' \
   > "$OUT/positive_control.json" 2> "$OUT/positive_control.stderr"
@@ -97,7 +96,6 @@ grep -q '"authorized_effect_envelope": \["MODIFY(X)"\]' "$OUT/positive_control.j
 grep -q '^positive-control$' "$TARGET/X"
 POSITIVE_ADMISSION_ID=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["admission_id"])' "$OUT/positive_control.json")
 
-# Direct target open/write must fail for hostile executor.
 set +e
 run_as g2hostile sh -c "cat '$TARGET/X'; printf hostile-direct > '$TARGET/X'" >"$OUT/direct_target.stdout" 2>"$OUT/direct_target.stderr"
 DIRECT_TARGET_RC=$?
@@ -106,7 +104,6 @@ printf '%s\n' "$DIRECT_TARGET_RC" > "$OUT/direct_target.exit"
 [[ "$DIRECT_TARGET_RC" -ne 0 ]]
 grep -q '^positive-control$' "$TARGET/X"
 
-# Direct control-ledger RW must fail for hostile executor.
 set +e
 run_as g2hostile sh -c "printf hostile-ledger >> '$LEDGER'" >"$OUT/direct_ledger.stdout" 2>"$OUT/direct_ledger.stderr"
 DIRECT_LEDGER_RC=$?
@@ -114,7 +111,6 @@ set -e
 printf '%s\n' "$DIRECT_LEDGER_RC" > "$OUT/direct_ledger.exit"
 [[ "$DIRECT_LEDGER_RC" -ne 0 ]]
 
-# Forged payload identity cannot substitute for SO_PEERCRED identity.
 run_as g2hostile python "$CLIENT" --socket "$SOCKET" --request \
   '{"action":"mutate","declared_principal":"alice","resource":"X","value":"forged-identity","possible_effects":["MODIFY(X)"]}' \
   > "$OUT/forged_identity.json" 2> "$OUT/forged_identity.stderr"
@@ -122,14 +118,12 @@ grep -q '"allowed": false' "$OUT/forged_identity.json"
 grep -q 'missing_authentication_context' "$OUT/forged_identity.json"
 grep -q '^positive-control$' "$TARGET/X"
 
-# Fake Broker credential fields cannot create authenticated identity.
 run_as g2hostile python "$CLIENT" --socket "$SOCKET" --request \
   '{"action":"mutate","broker_token":"forged","declared_principal":"alice","resource":"X","value":"forged-token","possible_effects":["MODIFY(X)"]}' \
   > "$OUT/forged_broker_credential.json" 2> "$OUT/forged_broker_credential.stderr"
 grep -q '"allowed": false' "$OUT/forged_broker_credential.json"
 grep -q '^positive-control$' "$TARGET/X"
 
-# Forged authorization/attempt/admission IDs are untrusted payload and cannot select trusted state.
 run_as g2requester python "$CLIENT" --socket "$SOCKET" --request \
   '{"action":"mutate","authorization_id":"forged-auth","attempt_id":"forged-attempt","admission_id":"forged-admission","resource":"X","value":"positive-control","possible_effects":["MODIFY(X)"]}' \
   > "$OUT/forged_ids.json" 2> "$OUT/forged_ids.stderr"
@@ -138,7 +132,6 @@ grep -q '"allowed": true' "$OUT/forged_ids.json"
 ! grep -q 'forged-admission' "$OUT/forged_ids.json"
 grep -q '^positive-control$' "$TARGET/X"
 
-# Bypass-admission public action is not exposed.
 run_as g2requester python "$CLIENT" --socket "$SOCKET" --request \
   '{"action":"execute","resource":"X","value":"bypass-admission"}' \
   > "$OUT/bypass_admission.json" 2> "$OUT/bypass_admission.stderr"
@@ -146,17 +139,22 @@ grep -q '"allowed": false' "$OUT/bypass_admission.json"
 grep -q 'unknown_action' "$OUT/bypass_admission.json"
 grep -q '^positive-control$' "$TARGET/X"
 
-# Admit O1 while supplying replacement O2-shaped payload fields: only canonical O1 executes.
 run_as g2requester python "$CLIENT" --socket "$SOCKET" --request \
   '{"action":"mutate","resource":"X","value":"O1","replacement_resource":"Y","replacement_value":"O2","replacement_possible_effects":["MODIFY(Y)"],"possible_effects":["MODIFY(X)"]}' \
   > "$OUT/o1_replacement_o2.json" 2> "$OUT/o1_replacement_o2.stderr"
-grep -q '"allowed": true' "$OUT/o1_replacement_o2.json"
-grep -q '\"value\":\"O1\"' "$OUT/o1_replacement_o2.json"
-! grep -q '\"value\":\"O2\"' "$OUT/o1_replacement_o2.json"
+python - "$OUT/o1_replacement_o2.json" <<'PY'
+import json, sys
+outer = json.load(open(sys.argv[1], encoding="utf-8"))
+assert outer["allowed"] is True
+canonical = json.loads(outer["canonical_operation"])
+assert canonical["resource"] == "X"
+assert canonical["value"] == "O1"
+assert canonical["possible_effects"] == ["MODIFY(X)"]
+assert "O2" not in outer["canonical_operation"]
+PY
 grep -q '^O1$' "$TARGET/X"
 [[ ! -e "$TARGET/Y" ]]
 
-# Reuse a prior admission ID for a different operation is blocked at public API precondition.
 run_as g2requester python "$CLIENT" --socket "$SOCKET" --request \
   "{\"action\":\"execute_admission\",\"admission_id\":\"$POSITIVE_ADMISSION_ID\",\"resource\":\"Y\",\"value\":\"reuse\"}" \
   > "$OUT/reuse_admission.json" 2> "$OUT/reuse_admission.stderr"
@@ -165,7 +163,6 @@ grep -q 'unknown_action' "$OUT/reuse_admission.json"
 grep -q '^O1$' "$TARGET/X"
 [[ ! -e "$TARGET/Y" ]]
 
-# UNKNOWN possible effects must deny at admission before effect.
 run_as g2requester python "$CLIENT" --socket "$SOCKET" --request \
   '{"action":"mutate","resource":"X","value":"unknown-effects"}' \
   > "$OUT/unknown_effects.json" 2> "$OUT/unknown_effects.stderr"
@@ -173,7 +170,6 @@ grep -q '"stage": "admission"' "$OUT/unknown_effects.json"
 grep -q 'unknown_possible_effects' "$OUT/unknown_effects.json"
 grep -q '^O1$' "$TARGET/X"
 
-# Over-broad possible effects must deny before effect.
 run_as g2requester python "$CLIENT" --socket "$SOCKET" --request \
   '{"action":"mutate","resource":"X","value":"overbroad","possible_effects":["MODIFY(X)","MODIFY(Y)"]}' \
   > "$OUT/overbroad_effects.json" 2> "$OUT/overbroad_effects.stderr"
@@ -181,7 +177,6 @@ grep -q '"allowed": false' "$OUT/overbroad_effects.json"
 grep -q 'nonconservative_boundary_effect_declaration' "$OUT/overbroad_effects.json"
 grep -q '^O1$' "$TARGET/X"
 
-# Alternate host/proc path to target must not be writable.
 PROC_TARGET="/proc/$BROKER_PID/root$TARGET/X"
 set +e
 run_as g2hostile sh -c "printf proc-escape > '$PROC_TARGET'" >"$OUT/proc_target.stdout" 2>"$OUT/proc_target.stderr"
@@ -191,7 +186,6 @@ printf '%s\n' "$PROC_TARGET_RC" > "$OUT/proc_target.exit"
 [[ "$PROC_TARGET_RC" -ne 0 ]]
 grep -q '^O1$' "$TARGET/X"
 
-# Alternate path traversal attempts through the Broker operation model must deny.
 run_as g2requester python "$CLIENT" --socket "$SOCKET" --request \
   '{"action":"mutate","resource":"../escape","value":"escape","possible_effects":["MODIFY(../escape)"]}' \
   > "$OUT/path_escape.json" 2> "$OUT/path_escape.stderr"
@@ -199,7 +193,6 @@ grep -q '"allowed": false' "$OUT/path_escape.json"
 grep -q 'invalid_operation' "$OUT/path_escape.json"
 grep -q '^O1$' "$TARGET/X"
 
-# No TCP target/Broker write API is exposed by the harness.
 set +e
 run_as g2hostile python -c 'import socket; s=socket.socket(); s.settimeout(1); s.connect(("127.0.0.1", 43177))' \
   >"$OUT/network_target.stdout" 2>"$OUT/network_target.stderr"
