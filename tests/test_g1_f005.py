@@ -48,10 +48,11 @@ class G1F005PrincipalProvenanceRegression(unittest.TestCase):
 
     def test_constructed_alice_principal_does_not_establish_authenticated_alice(self) -> None:
         forged_identity = Principal("alice")
-        result = self.kernel.authorize(
-            self.request,
-            trusted_principal=forged_identity,
-        )
+        may = self.kernel.may(forged_identity, self.request)
+        self.assertFalse(may.allowed)
+        self.assertEqual(may.reason, "missing_authentication_context")
+
+        result = self.kernel.authorize(self.request)
         self.assertFalse(result.allowed)
         self.assertEqual(result.reason, "missing_authentication_context")
         self.assertIsNone(result.authorization)
