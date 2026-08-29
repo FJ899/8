@@ -12,6 +12,7 @@ TARGET="$PRIVATE_ROOT/target"
 LEDGER="$PRIVATE_ROOT/ledger.sqlite"
 SOCKET="$SOCKET_ROOT/broker.sock"
 READY="$SOCKET_ROOT/ready"
+CLIENT="$SOCKET_ROOT/g2_ipc_client.py"
 
 cleanup() {
   if [[ -n "${BROKER_PID:-}" ]] && kill -0 "$BROKER_PID" 2>/dev/null; then
@@ -33,6 +34,8 @@ HOSTILE_UID=$(id -u g2hostile)
 
 chmod 700 "$PRIVATE_ROOT"
 chmod 777 "$SOCKET_ROOT"
+cp "$ROOT/scripts/g2_ipc_client.py" "$CLIENT"
+chmod 755 "$CLIENT"
 mkdir -p "$TARGET"
 chmod 700 "$TARGET"
 
@@ -59,9 +62,13 @@ done
   echo "TARGET=$TARGET"
   echo "LEDGER=$LEDGER"
   echo "SOCKET=$SOCKET"
+  echo "CLIENT=$CLIENT"
+  printf 'CLIENT_SHA256='; sha256sum "$CLIENT" | awk '{print $1}'
+  printf 'CANDIDATE_CLIENT_BLOB='; git rev-parse HEAD:scripts/g2_ipc_client.py
   stat -c 'PRIVATE_ROOT_MODE=%a OWNER=%u GROUP=%g' "$PRIVATE_ROOT"
   stat -c 'TARGET_MODE=%a OWNER=%u GROUP=%g' "$TARGET"
   stat -c 'SOCKET_MODE=%a OWNER=%u GROUP=%g' "$SOCKET"
+  stat -c 'CLIENT_MODE=%a OWNER=%u GROUP=%g' "$CLIENT"
   findmnt -T "$TARGET" -o TARGET,SOURCE,FSTYPE,OPTIONS
   findmnt -T "$LEDGER" -o TARGET,SOURCE,FSTYPE,OPTIONS || true
   ss -ltnup || true
@@ -70,10 +77,10 @@ done
 run_as() {
   local user=$1
   shift
-  sudo -u "$user" env PYTHONPATH="$ROOT" "$@"
+  sudo -u "$user" "$@"
 }
 
-run_as g2requester python scripts/g2_ipc_client.py --socket "$SOCKET" --request \
+run_as g2requester python "$CLIENT" --socket "$SOCKET" --request \
   '{"action":"mutate","resource":"X","value":"positive-control","possible_effects":["MODIFY(X)"]}' \
   > "$OUT/positive_control.json" 2> "$OUT/positive_control.stderr"
 grep -q '"allowed": true' "$OUT/positive_control.json"
@@ -94,27 +101,27 @@ set -e
 printf '%s\n' "$DIRECT_LEDGER_RC" > "$OUT/direct_ledger.exit"
 [[ "$DIRECT_LEDGER_RC" -ne 0 ]]
 
-run_as g2hostile python scripts/g2_ipc_client.py --socket "$SOCKET" --request \
+run_as g2hostile python "$CLIENT" --socket "$SOCKET" --request \
   '{"action":"mutate","declared_principal":"alice","resource":"X","value":"forged-identity","possible_effects":["MODIFY(X)"]}' \
   > "$OUT/forged_identity.json" 2> "$OUT/forged_identity.stderr"
 grep -q '"allowed": false' "$OUT/forged_identity.json"
 grep -q 'missing_authentication_context' "$OUT/forged_identity.json"
 grep -q '^positive-control$' "$TARGET/X"
 
-run_as g2hostile python scripts/g2_ipc_client.py --socket "$SOCKET" --request \
+run_as g2hostile python "$CLIENT" --socket "$SOCKET" --request \
   '{"action":"mutate","broker_token":"forged","declared_principal":"alice","resource":"X","value":"forged-token","possible_effects":["MODIFY(X)"]}' \
   > "$OUT/forged_broker_credential.json" 2> "$OUT/forged_broker_credential.stderr"
 grep -q '"allowed": false' "$OUT/forged_broker_credential.json"
 grep -q '^positive-control$' "$TARGET/X"
 
-run_as g2requester python scripts/g2_ipc_client.py --socket "$SOCKET" --request \
+run_as g2requester python "$CLIENT" --socket "$SOCKET" --request \
   '{"action":"mutate","resource":"X","value":"unknown-effects"}' \
   > "$OUT/unknown_effects.json" 2> "$OUT/unknown_effects.stderr"
 grep -q '"stage": "admission"' "$OUT/unknown_effects.json"
 grep -q 'unknown_possible_effects' "$OUT/unknown_effects.json"
 grep -q '^positive-control$' "$TARGET/X"
 
-run_as g2requester python scripts/g2_ipc_client.py --socket "$SOCKET" --request \
+run_as g2requester python "$CLIENT" --socket "$SOCKET" --request \
   '{"action":"mutate","resource":"X","value":"overbroad","possible_effects":["MODIFY(X)","MODIFY(Y)"]}' \
   > "$OUT/overbroad_effects.json" 2> "$OUT/overbroad_effects.stderr"
 grep -q '"allowed": false' "$OUT/overbroad_effects.json"
