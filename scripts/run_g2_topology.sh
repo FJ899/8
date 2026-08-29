@@ -15,7 +15,7 @@ READY="$SOCKET_ROOT/ready"
 
 cleanup() {
   if [[ -n "${BROKER_PID:-}" ]] && kill -0 "$BROKER_PID" 2>/dev/null; then
-    python scripts/g2_ipc_client.py --socket "$SOCKET" --request '{"action":"shutdown"}' >/dev/null 2>&1 || true
+    PYTHONPATH="$ROOT" python scripts/g2_ipc_client.py --socket "$SOCKET" --request '{"action":"shutdown"}' >/dev/null 2>&1 || true
     wait "$BROKER_PID" 2>/dev/null || true
   fi
   sudo userdel -f g2requester 2>/dev/null || true
@@ -36,7 +36,7 @@ chmod 777 "$SOCKET_ROOT"
 mkdir -p "$TARGET"
 chmod 700 "$TARGET"
 
-python scripts/g2_broker.py \
+PYTHONPATH="$ROOT" python scripts/g2_broker.py \
   --socket "$SOCKET" \
   --ledger "$LEDGER" \
   --target "$TARGET" \
@@ -73,14 +73,12 @@ run_as() {
   sudo -u "$user" env PYTHONPATH="$ROOT" "$@"
 }
 
-# Positive control: authenticated OS peer uid, exact admission, Broker-owned target effect.
 run_as g2requester python scripts/g2_ipc_client.py --socket "$SOCKET" --request \
   '{"action":"mutate","resource":"X","value":"positive-control","possible_effects":["MODIFY(X)"]}' \
   > "$OUT/positive_control.json" 2> "$OUT/positive_control.stderr"
 grep -q '"allowed": true' "$OUT/positive_control.json"
 grep -q '^positive-control$' "$TARGET/X"
 
-# Hostile executor cannot directly mutate target.
 set +e
 run_as g2hostile sh -c "printf hostile-direct > '$TARGET/X'" >"$OUT/direct_target.stdout" 2>"$OUT/direct_target.stderr"
 DIRECT_TARGET_RC=$?
@@ -89,7 +87,6 @@ printf '%s\n' "$DIRECT_TARGET_RC" > "$OUT/direct_target.exit"
 [[ "$DIRECT_TARGET_RC" -ne 0 ]]
 grep -q '^positive-control$' "$TARGET/X"
 
-# Hostile executor cannot write the control ledger.
 set +e
 run_as g2hostile sh -c "printf hostile-ledger >> '$LEDGER'" >"$OUT/direct_ledger.stdout" 2>"$OUT/direct_ledger.stderr"
 DIRECT_LEDGER_RC=$?
@@ -97,7 +94,6 @@ set -e
 printf '%s\n' "$DIRECT_LEDGER_RC" > "$OUT/direct_ledger.exit"
 [[ "$DIRECT_LEDGER_RC" -ne 0 ]]
 
-# Request-payload identity does not substitute for authenticated peer identity.
 run_as g2hostile python scripts/g2_ipc_client.py --socket "$SOCKET" --request \
   '{"action":"mutate","declared_principal":"alice","resource":"X","value":"forged-identity","possible_effects":["MODIFY(X)"]}' \
   > "$OUT/forged_identity.json" 2> "$OUT/forged_identity.stderr"
@@ -105,14 +101,12 @@ grep -q '"allowed": false' "$OUT/forged_identity.json"
 grep -q 'missing_authentication_context' "$OUT/forged_identity.json"
 grep -q '^positive-control$' "$TARGET/X"
 
-# Fake Broker credential fields do not create authenticated identity.
 run_as g2hostile python scripts/g2_ipc_client.py --socket "$SOCKET" --request \
   '{"action":"mutate","broker_token":"forged","declared_principal":"alice","resource":"X","value":"forged-token","possible_effects":["MODIFY(X)"]}' \
   > "$OUT/forged_broker_credential.json" 2> "$OUT/forged_broker_credential.stderr"
 grep -q '"allowed": false' "$OUT/forged_broker_credential.json"
 grep -q '^positive-control$' "$TARGET/X"
 
-# Unknown possible effects reach admission under an authenticated requester and deny pre-effect.
 run_as g2requester python scripts/g2_ipc_client.py --socket "$SOCKET" --request \
   '{"action":"mutate","resource":"X","value":"unknown-effects"}' \
   > "$OUT/unknown_effects.json" 2> "$OUT/unknown_effects.stderr"
@@ -120,14 +114,12 @@ grep -q '"stage": "admission"' "$OUT/unknown_effects.json"
 grep -q 'unknown_possible_effects' "$OUT/unknown_effects.json"
 grep -q '^positive-control$' "$TARGET/X"
 
-# Malformed/over-broad declaration cannot pass the boundary model.
 run_as g2requester python scripts/g2_ipc_client.py --socket "$SOCKET" --request \
   '{"action":"mutate","resource":"X","value":"overbroad","possible_effects":["MODIFY(X)","MODIFY(Y)"]}' \
   > "$OUT/overbroad_effects.json" 2> "$OUT/overbroad_effects.stderr"
 grep -q '"allowed": false' "$OUT/overbroad_effects.json"
 grep -q '^positive-control$' "$TARGET/X"
 
-# Alternate host/proc path to target is not writable by hostile executor.
 PROC_TARGET="/proc/$BROKER_PID/root$TARGET/X"
 set +e
 run_as g2hostile sh -c "printf proc-escape > '$PROC_TARGET'" >"$OUT/proc_target.stdout" 2>"$OUT/proc_target.stderr"
@@ -137,7 +129,6 @@ printf '%s\n' "$PROC_TARGET_RC" > "$OUT/proc_target.exit"
 [[ "$PROC_TARGET_RC" -ne 0 ]]
 grep -q '^positive-control$' "$TARGET/X"
 
-# No TCP Broker target API is exposed by the harness.
 set +e
 run_as g2hostile python -c 'import socket; s=socket.socket(); s.settimeout(1); s.connect(("127.0.0.1", 43177))' \
   >"$OUT/network_target.stdout" 2>"$OUT/network_target.stderr"
