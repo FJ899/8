@@ -79,7 +79,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python scripts/capture_g3_evidence.py --output-dir g3-evidence/state 2>&1 | tee g3-evidence/capture.log
+          python -I -c 'import runpy,sys; sys.path.insert(0,"."); sys.argv=["scripts/capture_g3_evidence.py","--output-dir","g3-evidence/state"]; runpy.run_path("scripts/capture_g3_evidence.py",run_name="__main__")' 2>&1 | tee g3-evidence/capture.log
 
       - name: Hash raw evidence
         if: always()
