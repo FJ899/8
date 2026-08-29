@@ -34,6 +34,7 @@ jobs:
           python -m unittest -v tests.test_g1_f005
           python -m unittest -v tests.test_g1_f006
           python -m unittest -v tests.test_g1_f009
+          python -m unittest -v tests.test_g1_f011
 
       - name: Bind and execute G1 evidence with F010 assertions
         shell: bash

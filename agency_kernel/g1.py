@@ -126,7 +126,6 @@ class Kernel:
         self.db_path = str(db_path)
         self._clock = clock or (lambda: int(time.time()))
         self._trusted_contexts: Dict[int, AuthenticationContext] = {}
-        self._principal_contexts: Dict[int, AuthenticationContext] = {}
         self._initialize_schema()
 
     def _connect(self) -> sqlite3.Connection:
@@ -200,14 +199,11 @@ class Kernel:
             c.execute("INSERT INTO authentication_contexts(context_id, principal_id, valid) VALUES (?, ?, ?)",
                       (context.context_id, principal.principal_id, self._db_bool(valid)))
         self._trusted_contexts[id(context)] = context
-        self._principal_contexts[id(principal)] = context
 
-    def _trusted_context(self, value: Any) -> AuthenticationContext | None:
+    def _trusted_context(self, value: AuthenticationContext | None) -> AuthenticationContext | None:
         if isinstance(value, AuthenticationContext):
             registered = self._trusted_contexts.get(id(value))
             return value if registered is value else None
-        if isinstance(value, Principal):
-            return self._principal_contexts.get(id(value))
         return None
 
     def set_authentication_context_valid(self, context_id: str, valid: Optional[bool]) -> None:
@@ -265,7 +261,7 @@ class Kernel:
             return None, "invalid_authentication_context"
         return str(row["principal_id"]), None
 
-    def may(self, authentication_context: AuthenticationContext | Principal | None, request: ActionRequest) -> MayResult:
+    def may(self, authentication_context: AuthenticationContext | None, request: ActionRequest) -> MayResult:
         trusted = self._trusted_context(authentication_context)
         with self._connect() as c:
             principal_id, error = self._resolve_authenticated_principal(c, trusted)
@@ -300,9 +296,8 @@ class Kernel:
         if saw_invalid: return MayResult(False, "authority_invalid")
         return MayResult(False, "authority_absent")
 
-    def authorize(self, request: ActionRequest, *, authentication_context: AuthenticationContext | None = None, trusted_principal: Principal | None = None) -> AuthorizationResult:
-        supplied: Any = authentication_context if authentication_context is not None else trusted_principal
-        trusted = self._trusted_context(supplied)
+    def authorize(self, request: ActionRequest, *, authentication_context: AuthenticationContext | None = None) -> AuthorizationResult:
+        trusted = self._trusted_context(authentication_context)
         c = self._connect()
         try:
             c.execute("BEGIN IMMEDIATE")

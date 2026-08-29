@@ -49,7 +49,7 @@ class G1F006AuthenticationSeparationRegression(unittest.TestCase):
         self.assertFalse(may.allowed)
         self.assertEqual(may.reason, "missing_authentication_context")
 
-        result = self.kernel.authorize(self.request, trusted_principal=self.alice)
+        result = self.kernel.authorize(self.request)
         self.assertFalse(result.allowed)
         self.assertEqual(result.reason, "missing_authentication_context")
         self.assertIsNone(result.authorization)
