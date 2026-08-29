@@ -40,7 +40,9 @@ class G4F005NoOpEffectRegression(unittest.TestCase):
             self.assertEqual(after.commit_oid, before.commit_oid)
             self.assertEqual(after.tree_oid, before.tree_oid)
             self.assertEqual(after.entries, before.entries)
-            self.assertEqual(kernel.snapshot()["operation_admissions"], [])
+            with kernel._connect() as c:
+                admission_count = c.execute("SELECT COUNT(*) FROM operation_admissions").fetchone()[0]
+            self.assertEqual(admission_count, 0)
 
 
 if __name__ == "__main__":
