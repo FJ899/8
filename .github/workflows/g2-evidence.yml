@@ -36,36 +36,69 @@ jobs:
             printf 'GITHUB_SHA=%s\n' "$GITHUB_SHA"
             printf 'GITHUB_RUN_ID=%s\n' "$GITHUB_RUN_ID"
             printf 'GITHUB_RUN_ATTEMPT=%s\n' "$GITHUB_RUN_ATTEMPT"
+            printf 'GITHUB_WORKFLOW_REF=%s\n' "$GITHUB_WORKFLOW_REF"
+            printf 'GITHUB_REF=%s\n' "$GITHUB_REF"
             printf 'HEAD=%s\n' "$(git rev-parse HEAD)"
             printf 'TREE=%s\n' "$(git rev-parse HEAD^{tree})"
             printf 'UID=%s\n' "$(id -u)"
             printf 'GID=%s\n' "$(id -g)"
+            printf 'GROUPS=%s\n' "$(id -G)"
             printf 'UNAME=%s\n' "$(uname -a)"
             printf 'PYTHON=%s\n' "$(python --version 2>&1)"
             printf 'WORKFLOW_BLOB=%s\n' "$(git rev-parse HEAD:.github/workflows/g2-evidence.yml)"
             printf 'G2_BLOB=%s\n' "$(git rev-parse HEAD:agency_kernel/g2.py)"
+            printf 'G2_TEST_BLOB=%s\n' "$(git rev-parse HEAD:tests/test_g2.py)"
             printf 'TOPOLOGY_BLOB=%s\n' "$(git rev-parse HEAD:scripts/run_g2_topology.sh)"
+            printf 'BROKER_BLOB=%s\n' "$(git rev-parse HEAD:scripts/g2_broker.py)"
+            printf 'CLIENT_BLOB=%s\n' "$(git rev-parse HEAD:scripts/g2_ipc_client.py)"
+            printf 'CHECKOUT_ACTION_SHA=%s\n' '08c6903cd8c0fde910a37f88322edcfb5dd907a8'
+            printf 'UPLOAD_ARTIFACT_ACTION_SHA=%s\n' 'ea165f8d65b6e75b540449e92b4886f43607fa02'
           } | tee g2-run-metadata/execution_instance.txt
           cat /proc/self/status > g2-run-metadata/process_status.txt
           mount > g2-run-metadata/mounts.txt
           ip addr > g2-run-metadata/ip_addr.txt
           ip route > g2-run-metadata/ip_route.txt
+          ss -ltnup > g2-run-metadata/listeners.txt 2>&1 || true
 
       - name: Re-run accepted G1 regressions
         shell: bash
         run: |
           set -euo pipefail
-          python -m unittest -v tests.test_g1
-          python -m unittest -v tests.test_g1_f005
-          python -m unittest -v tests.test_g1_f006
-          python -m unittest -v tests.test_g1_f009
-          python -m unittest -v tests.test_g1_f011
+          mkdir -p g2-test-evidence
+          run_test() {
+            local name=$1
+            shift
+            set +e
+            "$@" >"g2-test-evidence/${name}.stdout" 2>"g2-test-evidence/${name}.stderr"
+            local rc=$?
+            set -e
+            printf '%s\n' "$rc" >"g2-test-evidence/${name}.exit"
+            printf '%q ' "$@" >"g2-test-evidence/${name}.command"
+            printf '\n' >>"g2-test-evidence/${name}.command"
+            cat "g2-test-evidence/${name}.stdout"
+            cat "g2-test-evidence/${name}.stderr" >&2
+            return "$rc"
+          }
+          run_test g1 python -m unittest -v tests.test_g1
+          run_test g1_f005 python -m unittest -v tests.test_g1_f005
+          run_test g1_f006 python -m unittest -v tests.test_g1_f006
+          run_test g1_f009 python -m unittest -v tests.test_g1_f009
+          run_test g1_f011 python -m unittest -v tests.test_g1_f011
 
       - name: Run G2 admission regressions
         shell: bash
         run: |
           set -euo pipefail
-          python -m unittest -v tests.test_g2
+          mkdir -p g2-test-evidence
+          set +e
+          python -m unittest -v tests.test_g2 >g2-test-evidence/g2.stdout 2>g2-test-evidence/g2.stderr
+          rc=$?
+          set -e
+          printf '%s\n' "$rc" >g2-test-evidence/g2.exit
+          printf '%s\n' 'python -m unittest -v tests.test_g2' >g2-test-evidence/g2.command
+          cat g2-test-evidence/g2.stdout
+          cat g2-test-evidence/g2.stderr >&2
+          exit "$rc"
 
       - name: Run G2 physical capability-boundary harness
         shell: bash
@@ -80,7 +113,24 @@ jobs:
           set -euo pipefail
           mkdir -p g2-evidence
           cp -a g2-run-metadata g2-evidence/ 2>/dev/null || true
+          cp -a g2-test-evidence g2-evidence/ 2>/dev/null || true
           cp -a g2-topology-evidence g2-evidence/ 2>/dev/null || true
+          {
+            echo 'attack_class | evidence'
+            echo 'direct target open/write | g2-topology-evidence/direct_target.*'
+            echo 'direct ledger RW | g2-topology-evidence/direct_ledger.*'
+            echo 'forged authenticated identity | g2-topology-evidence/forged_identity.json'
+            echo 'forged authorization/attempt/admission IDs | g2-topology-evidence/forged_ids.json'
+            echo 'obtain/use Broker credentials | g2-topology-evidence/forged_broker_credential.json'
+            echo 'bypass admission | g2-topology-evidence/bypass_admission.json'
+            echo 'admit O1 then replace with O2 | g2-topology-evidence/o1_replacement_o2.json + g2-test-evidence/g2.*'
+            echo 'reuse admission for different operation | g2-topology-evidence/reuse_admission.json + g2-test-evidence/g2.*'
+            echo 'possible_effects UNKNOWN | g2-topology-evidence/unknown_effects.json + g2-test-evidence/g2.*'
+            echo 'possible_effects exceeds envelope | g2-topology-evidence/overbroad_effects.json + g2-test-evidence/g2.*'
+            echo 'alternate writable paths | g2-topology-evidence/proc_target.* and path_escape.json'
+            echo 'mount/host path | topology.txt, proc_target.*, path_escape.json'
+            echo 'network path | g2-topology-evidence/network_target.* and g2-run-metadata/listeners.txt'
+          } > g2-evidence/attack_coverage.txt
           find g2-evidence -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > g2-evidence/SHA256SUMS
 
       - name: Upload raw G2 evidence
