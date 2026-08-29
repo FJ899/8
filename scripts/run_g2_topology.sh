@@ -57,6 +57,12 @@ for _ in $(seq 1 100); do
 done
 [[ -S "$SOCKET" && -f "$READY" ]]
 
+run_as() {
+  local user=$1
+  shift
+  sudo -u "$user" "$@"
+}
+
 {
   echo "REQUESTER_UID=$REQUESTER_UID"
   echo "HOSTILE_UID=$HOSTILE_UID"
@@ -66,6 +72,8 @@ done
   echo "LEDGER=$LEDGER"
   echo "SOCKET=$SOCKET"
   echo "CLIENT=$CLIENT"
+  printf 'REQUESTER_ID='; id g2requester
+  printf 'HOSTILE_ID='; id g2hostile
   printf 'CLIENT_SHA256='; sha256sum "$CLIENT" | awk '{print $1}'
   printf 'CANDIDATE_CLIENT_BLOB='; git rev-parse HEAD:scripts/g2_ipc_client.py
   printf 'BROKER_BLOB='; git rev-parse HEAD:scripts/g2_broker.py
@@ -80,15 +88,17 @@ done
   ss -ltnup || true
 } > "$OUT/topology.txt" 2>&1
 
-run_as() {
-  local user=$1
-  shift
-  sudo -u "$user" "$@"
-}
+grep '^Cap' "/proc/$BROKER_PID/status" > "$OUT/broker_capabilities.txt"
+run_as g2requester sh -c 'id; grep "^Cap" /proc/self/status' > "$OUT/requester_capabilities.txt" 2>&1
+run_as g2hostile sh -c 'id; grep "^Cap" /proc/self/status' > "$OUT/hostile_capabilities.txt" 2>&1
+run_as g2requester sh -c 'ip addr; ip route' > "$OUT/requester_network.txt" 2>&1
+run_as g2hostile sh -c 'ip addr; ip route' > "$OUT/hostile_network.txt" 2>&1
 
+# Positive control.
 run_as g2requester python "$CLIENT" --socket "$SOCKET" --request \
   '{"action":"mutate","resource":"X","value":"positive-control","possible_effects":["MODIFY(X)"]}' \
   > "$OUT/positive_control.json" 2> "$OUT/positive_control.stderr"
+printf '0\n' > "$OUT/positive_control.exit"
 grep -q '"allowed": true' "$OUT/positive_control.json"
 grep -q '"stage": "execution"' "$OUT/positive_control.json"
 grep -q '"possible_effects": \["MODIFY(X)"\]' "$OUT/positive_control.json"
@@ -96,24 +106,36 @@ grep -q '"authorized_effect_envelope": \["MODIFY(X)"\]' "$OUT/positive_control.j
 grep -q '^positive-control$' "$TARGET/X"
 POSITIVE_ADMISSION_ID=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["admission_id"])' "$OUT/positive_control.json")
 
+# The authenticated untrusted requester itself must not have direct target/ledger capability.
+set +e
+run_as g2requester sh -c "printf requester-direct > '$TARGET/X'" >"$OUT/requester_direct_target.stdout" 2>"$OUT/requester_direct_target.stderr"
+REQUESTER_DIRECT_TARGET_RC=$?
+run_as g2requester sh -c "printf requester-ledger >> '$LEDGER'" >"$OUT/requester_direct_ledger.stdout" 2>"$OUT/requester_direct_ledger.stderr"
+REQUESTER_DIRECT_LEDGER_RC=$?
+set -e
+printf '%s\n' "$REQUESTER_DIRECT_TARGET_RC" > "$OUT/requester_direct_target.exit"
+printf '%s\n' "$REQUESTER_DIRECT_LEDGER_RC" > "$OUT/requester_direct_ledger.exit"
+[[ "$REQUESTER_DIRECT_TARGET_RC" -ne 0 ]]
+[[ "$REQUESTER_DIRECT_LEDGER_RC" -ne 0 ]]
+grep -q '^positive-control$' "$TARGET/X"
+
+# Secondary hostile identity direct target/ledger access also fails.
 set +e
 run_as g2hostile sh -c "cat '$TARGET/X'; printf hostile-direct > '$TARGET/X'" >"$OUT/direct_target.stdout" 2>"$OUT/direct_target.stderr"
 DIRECT_TARGET_RC=$?
-set -e
-printf '%s\n' "$DIRECT_TARGET_RC" > "$OUT/direct_target.exit"
-[[ "$DIRECT_TARGET_RC" -ne 0 ]]
-grep -q '^positive-control$' "$TARGET/X"
-
-set +e
 run_as g2hostile sh -c "printf hostile-ledger >> '$LEDGER'" >"$OUT/direct_ledger.stdout" 2>"$OUT/direct_ledger.stderr"
 DIRECT_LEDGER_RC=$?
 set -e
+printf '%s\n' "$DIRECT_TARGET_RC" > "$OUT/direct_target.exit"
 printf '%s\n' "$DIRECT_LEDGER_RC" > "$OUT/direct_ledger.exit"
+[[ "$DIRECT_TARGET_RC" -ne 0 ]]
 [[ "$DIRECT_LEDGER_RC" -ne 0 ]]
+grep -q '^positive-control$' "$TARGET/X"
 
 run_as g2hostile python "$CLIENT" --socket "$SOCKET" --request \
   '{"action":"mutate","declared_principal":"alice","resource":"X","value":"forged-identity","possible_effects":["MODIFY(X)"]}' \
   > "$OUT/forged_identity.json" 2> "$OUT/forged_identity.stderr"
+printf '0\n' > "$OUT/forged_identity.exit"
 grep -q '"allowed": false' "$OUT/forged_identity.json"
 grep -q 'missing_authentication_context' "$OUT/forged_identity.json"
 grep -q '^positive-control$' "$TARGET/X"
@@ -121,12 +143,14 @@ grep -q '^positive-control$' "$TARGET/X"
 run_as g2hostile python "$CLIENT" --socket "$SOCKET" --request \
   '{"action":"mutate","broker_token":"forged","declared_principal":"alice","resource":"X","value":"forged-token","possible_effects":["MODIFY(X)"]}' \
   > "$OUT/forged_broker_credential.json" 2> "$OUT/forged_broker_credential.stderr"
+printf '0\n' > "$OUT/forged_broker_credential.exit"
 grep -q '"allowed": false' "$OUT/forged_broker_credential.json"
 grep -q '^positive-control$' "$TARGET/X"
 
 run_as g2requester python "$CLIENT" --socket "$SOCKET" --request \
   '{"action":"mutate","authorization_id":"forged-auth","attempt_id":"forged-attempt","admission_id":"forged-admission","resource":"X","value":"positive-control","possible_effects":["MODIFY(X)"]}' \
   > "$OUT/forged_ids.json" 2> "$OUT/forged_ids.stderr"
+printf '0\n' > "$OUT/forged_ids.exit"
 grep -q '"allowed": true' "$OUT/forged_ids.json"
 ! grep -q 'forged-attempt' "$OUT/forged_ids.json"
 ! grep -q 'forged-admission' "$OUT/forged_ids.json"
@@ -135,6 +159,7 @@ grep -q '^positive-control$' "$TARGET/X"
 run_as g2requester python "$CLIENT" --socket "$SOCKET" --request \
   '{"action":"execute","resource":"X","value":"bypass-admission"}' \
   > "$OUT/bypass_admission.json" 2> "$OUT/bypass_admission.stderr"
+printf '0\n' > "$OUT/bypass_admission.exit"
 grep -q '"allowed": false' "$OUT/bypass_admission.json"
 grep -q 'unknown_action' "$OUT/bypass_admission.json"
 grep -q '^positive-control$' "$TARGET/X"
@@ -142,6 +167,7 @@ grep -q '^positive-control$' "$TARGET/X"
 run_as g2requester python "$CLIENT" --socket "$SOCKET" --request \
   '{"action":"mutate","resource":"X","value":"O1","replacement_resource":"Y","replacement_value":"O2","replacement_possible_effects":["MODIFY(Y)"],"possible_effects":["MODIFY(X)"]}' \
   > "$OUT/o1_replacement_o2.json" 2> "$OUT/o1_replacement_o2.stderr"
+printf '0\n' > "$OUT/o1_replacement_o2.exit"
 python - "$OUT/o1_replacement_o2.json" <<'PY'
 import json, sys
 outer = json.load(open(sys.argv[1], encoding="utf-8"))
@@ -158,6 +184,7 @@ grep -q '^O1$' "$TARGET/X"
 run_as g2requester python "$CLIENT" --socket "$SOCKET" --request \
   "{\"action\":\"execute_admission\",\"admission_id\":\"$POSITIVE_ADMISSION_ID\",\"resource\":\"Y\",\"value\":\"reuse\"}" \
   > "$OUT/reuse_admission.json" 2> "$OUT/reuse_admission.stderr"
+printf '0\n' > "$OUT/reuse_admission.exit"
 grep -q '"allowed": false' "$OUT/reuse_admission.json"
 grep -q 'unknown_action' "$OUT/reuse_admission.json"
 grep -q '^O1$' "$TARGET/X"
@@ -166,6 +193,7 @@ grep -q '^O1$' "$TARGET/X"
 run_as g2requester python "$CLIENT" --socket "$SOCKET" --request \
   '{"action":"mutate","resource":"X","value":"unknown-effects"}' \
   > "$OUT/unknown_effects.json" 2> "$OUT/unknown_effects.stderr"
+printf '0\n' > "$OUT/unknown_effects.exit"
 grep -q '"stage": "admission"' "$OUT/unknown_effects.json"
 grep -q 'unknown_possible_effects' "$OUT/unknown_effects.json"
 grep -q '^O1$' "$TARGET/X"
@@ -173,6 +201,7 @@ grep -q '^O1$' "$TARGET/X"
 run_as g2requester python "$CLIENT" --socket "$SOCKET" --request \
   '{"action":"mutate","resource":"X","value":"overbroad","possible_effects":["MODIFY(X)","MODIFY(Y)"]}' \
   > "$OUT/overbroad_effects.json" 2> "$OUT/overbroad_effects.stderr"
+printf '0\n' > "$OUT/overbroad_effects.exit"
 grep -q '"allowed": false' "$OUT/overbroad_effects.json"
 grep -q 'nonconservative_boundary_effect_declaration' "$OUT/overbroad_effects.json"
 grep -q '^O1$' "$TARGET/X"
@@ -189,6 +218,7 @@ grep -q '^O1$' "$TARGET/X"
 run_as g2requester python "$CLIENT" --socket "$SOCKET" --request \
   '{"action":"mutate","resource":"../escape","value":"escape","possible_effects":["MODIFY(../escape)"]}' \
   > "$OUT/path_escape.json" 2> "$OUT/path_escape.stderr"
+printf '0\n' > "$OUT/path_escape.exit"
 grep -q '"allowed": false' "$OUT/path_escape.json"
 grep -q 'invalid_operation' "$OUT/path_escape.json"
 grep -q '^O1$' "$TARGET/X"
