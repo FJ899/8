@@ -69,7 +69,7 @@ class ExecutionResult:
 
 
 class Kernel(G1Kernel):
-    """G2 extension implementing minimal exact-operation admission and boundary mutation."""
+    """G2 extension implementing exact-operation admission and one-shot boundary execution."""
 
     def __init__(self, db_path: str | Path, target_root: str | Path, clock=None):
         self.target_root = Path(target_root)
@@ -98,6 +98,10 @@ class Kernel(G1Kernel):
                     capability_id TEXT NOT NULL REFERENCES capabilities(capability_id),
                     operation_digest TEXT NOT NULL,
                     canonical_operation BLOB NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS operation_admission_executions (
+                    admission_id TEXT PRIMARY KEY REFERENCES operation_admissions(admission_id),
+                    executed_at INTEGER NOT NULL
                 );
                 """
             )
@@ -235,36 +239,69 @@ class Kernel(G1Kernel):
         finally:
             c.close()
 
-    def execute_admission(self, admission_id: str) -> ExecutionResult:
-        with self._connect() as c:
-            row = c.execute(
-                "SELECT operation_digest, canonical_operation FROM operation_admissions WHERE admission_id = ?",
-                (admission_id,),
-            ).fetchone()
-        if row is None:
-            return ExecutionResult(False, "admission_absent")
-
-        canonical = bytes(row["canonical_operation"])
+    @staticmethod
+    def _decode_admitted_operation(canonical: bytes, expected_digest: str):
         digest = hashlib.sha256(canonical).hexdigest()
-        if digest != row["operation_digest"]:
-            return ExecutionResult(False, "admission_digest_mismatch")
-
+        if digest != expected_digest:
+            return None, None, None, "admission_digest_mismatch", digest
         try:
             payload = json.loads(canonical.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
-            return ExecutionResult(False, "invalid_admitted_operation")
+            return None, None, None, "invalid_admitted_operation", digest
         if payload.get("operation_type") != "boundary_mutation":
-            return ExecutionResult(False, "invalid_admitted_operation")
+            return None, None, None, "invalid_admitted_operation", digest
         resource = payload.get("resource")
         value = payload.get("value")
         effects = payload.get("possible_effects")
         if not isinstance(resource, str) or not isinstance(value, str):
-            return ExecutionResult(False, "invalid_admitted_operation")
+            return None, None, None, "invalid_admitted_operation", digest
         if effects != [f"MODIFY({resource})"]:
-            return ExecutionResult(False, "invalid_admitted_operation")
+            return None, None, None, "invalid_admitted_operation", digest
         if not resource or "/" in resource or "\\" in resource or resource in {".", ".."}:
-            return ExecutionResult(False, "invalid_admitted_operation")
+            return None, None, None, "invalid_admitted_operation", digest
+        return resource, value, effects, None, digest
+
+    def execute_admission(self, admission_id: str) -> ExecutionResult:
+        c = self._connect()
+        try:
+            c.execute("BEGIN IMMEDIATE")
+            row = c.execute(
+                "SELECT operation_digest, canonical_operation FROM operation_admissions WHERE admission_id = ?",
+                (admission_id,),
+            ).fetchone()
+            if row is None:
+                c.execute("ROLLBACK")
+                return ExecutionResult(False, "admission_absent")
+            if c.execute(
+                "SELECT 1 FROM operation_admission_executions WHERE admission_id = ?",
+                (admission_id,),
+            ).fetchone() is not None:
+                c.execute("ROLLBACK")
+                return ExecutionResult(False, "admission_consumed")
+
+            canonical = bytes(row["canonical_operation"])
+            resource, value, _effects, error, digest = self._decode_admitted_operation(
+                canonical, str(row["operation_digest"])
+            )
+            if error is not None:
+                c.execute("ROLLBACK")
+                return ExecutionResult(False, error, operation_digest=digest)
+
+            c.execute(
+                "INSERT INTO operation_admission_executions(admission_id, executed_at) VALUES (?, ?)",
+                (admission_id, int(self._clock())),
+            )
+            c.execute("COMMIT")
+        except BaseException:
+            if c.in_transaction:
+                c.execute("ROLLBACK")
+            raise
+        finally:
+            c.close()
 
         target = self.target_root / resource
-        target.write_text(value, encoding="utf-8")
+        try:
+            target.write_text(value, encoding="utf-8")
+        except (OSError, ValueError):
+            return ExecutionResult(False, "effect_failed", resource, digest)
         return ExecutionResult(True, "executed", resource, digest)
