@@ -54,7 +54,6 @@ class G2AdmissionTests(unittest.TestCase):
         admission = self.kernel.admit_operation(self.attempt, "cap-X", operation)
         self.assertTrue(admission.allowed)
         self.assertEqual(admission.admission.operation_digest, operation.operation_digest)
-
         result = self.kernel.execute_admission(admission.admission.admission_id)
         self.assertTrue(result.allowed)
         self.assertEqual(result.operation_digest, operation.operation_digest)
@@ -74,10 +73,7 @@ class G2AdmissionTests(unittest.TestCase):
 
     def test_malformed_effect_declaration_denies(self) -> None:
         operation = TechnicalOperation(
-            "boundary_mutation",
-            "X",
-            "after",
-            frozenset({"MODIFY(X)", "MODIFY(Y)"}),
+            "boundary_mutation", "X", "after", frozenset({"MODIFY(X)", "MODIFY(Y)"})
         )
         result = self.kernel.admit_operation(self.attempt, "cap-X", operation)
         self.assertFalse(result.allowed)
@@ -119,21 +115,32 @@ class G2AdmissionTests(unittest.TestCase):
         self.assertTrue(admission.allowed)
         replacement = self.op(value="O2")
         self.assertNotEqual(replacement.operation_digest, admission.admission.operation_digest)
-
         result = self.kernel.execute_admission(admission.admission.admission_id)
         self.assertTrue(result.allowed)
         self.assertEqual((self.kernel.target_root / "X").read_text(encoding="utf-8"), "O1")
 
-    def test_reusing_admission_cannot_select_different_operation(self) -> None:
+    def test_replay_of_executed_admission_denies_second_effect(self) -> None:
         operation = self.op(value="O1")
         admission = self.kernel.admit_operation(self.attempt, "cap-X", operation)
         self.assertTrue(admission.allowed)
         first = self.kernel.execute_admission(admission.admission.admission_id)
-        second = self.kernel.execute_admission(admission.admission.admission_id)
         self.assertTrue(first.allowed)
-        self.assertTrue(second.allowed)
-        self.assertEqual(first.operation_digest, second.operation_digest)
+        self.kernel.set_grant_revoked("grant-alice", True)
+        second = self.kernel.execute_admission(admission.admission.admission_id)
+        self.assertFalse(second.allowed)
+        self.assertEqual(second.reason, "admission_consumed")
         self.assertEqual((self.kernel.target_root / "X").read_text(encoding="utf-8"), "O1")
+
+    def test_admission_before_revocation_may_complete_once(self) -> None:
+        admission = self.kernel.admit_operation(self.attempt, "cap-X", self.op(value="admitted-first"))
+        self.assertTrue(admission.allowed)
+        self.kernel.set_grant_revoked("grant-alice", True)
+        first = self.kernel.execute_admission(admission.admission.admission_id)
+        self.assertTrue(first.allowed)
+        second = self.kernel.execute_admission(admission.admission.admission_id)
+        self.assertFalse(second.allowed)
+        self.assertEqual(second.reason, "admission_consumed")
+        self.assertEqual((self.kernel.target_root / "X").read_text(encoding="utf-8"), "admitted-first")
 
 
 if __name__ == "__main__":
