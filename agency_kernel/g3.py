@@ -109,10 +109,26 @@ class Kernel(G2Kernel):
 
     def __init__(self, control_db: str | Path, target_db: str | Path, clock=None):
         self.target_db = str(target_db)
-        # G2 target_root remains a distinct boundary fixture and is not the G3 target store.
         boundary_root = Path(str(target_db) + ".g2-boundary")
         super().__init__(control_db, boundary_root, clock=clock)
+        self._initialize_g3_control_schema()
         self._initialize_target_store()
+
+    def _initialize_g3_control_schema(self) -> None:
+        with self._connect() as c:
+            c.execute(
+                """
+                CREATE TABLE IF NOT EXISTS g3_execution_completions (
+                    admission_id TEXT PRIMARY KEY REFERENCES operation_admissions(admission_id),
+                    mutation_id TEXT NOT NULL,
+                    completed_at INTEGER NOT NULL
+                )
+                """
+            )
+
+    def has_control_completion(self, admission_id: str) -> bool:
+        with self._connect() as c:
+            return c.execute("SELECT 1 FROM g3_execution_completions WHERE admission_id = ?", (admission_id,)).fetchone() is not None
 
     def _target_connect(self) -> sqlite3.Connection:
         c = sqlite3.connect(self.target_db, timeout=5.0, isolation_level=None, check_same_thread=False)
@@ -151,10 +167,13 @@ class Kernel(G2Kernel):
 
     def seed_resource(self, resource: str, value: str = "", version: int = 0) -> None:
         with self._target_connect() as c:
-            c.execute(
-                "INSERT OR REPLACE INTO resources(resource, value, version) VALUES (?, ?, ?)",
-                (resource, value, version),
-            )
+            c.execute("INSERT OR REPLACE INTO resources(resource, value, version) VALUES (?, ?, ?)", (resource, value, version))
+
+    def inject_unattributed_delta_for_test(self, resource: str, value: str, version: int) -> None:
+        """Adversarial test hook: change observed target state without trusted mutation provenance."""
+        with self._target_connect() as c:
+            c.execute("INSERT OR REPLACE INTO resources(resource, value, version) VALUES (?, ?, ?)", (resource, value, version))
+            c.execute("DELETE FROM mutation_provenance WHERE resource = ?", (resource,))
 
     def admit_put_if_version(self, attempt: ActionAttempt, capability_id: str, operation: PutIfVersionOperation) -> AdmissionResult:
         try:
@@ -165,7 +184,6 @@ class Kernel(G2Kernel):
             return AdmissionResult(False, "unknown_possible_effects")
         if operation.possible_effects != self.possible_effects_for(operation.resource):
             return AdmissionResult(False, "effect_model_mismatch")
-
         c = self._connect()
         try:
             c.execute("BEGIN IMMEDIATE")
@@ -173,9 +191,7 @@ class Kernel(G2Kernel):
             if row is None:
                 c.execute("ROLLBACK")
                 return AdmissionResult(False, "invalid_attempt")
-            if (row["authorization_id"], row["principal_id"], row["intent_id"], row["contract_id"]) != (
-                attempt.authorization_id, attempt.principal_id, attempt.intent_id, attempt.contract_id
-            ):
+            if (row["authorization_id"], row["principal_id"], row["intent_id"], row["contract_id"]) != (attempt.authorization_id, attempt.principal_id, attempt.intent_id, attempt.contract_id):
                 c.execute("ROLLBACK")
                 return AdmissionResult(False, "forged_attempt")
             authority = self._specific_grant_status(c, row["grant_id"], row["principal_id"], row["intent_id"], int(self._clock()))
@@ -200,10 +216,7 @@ class Kernel(G2Kernel):
                 c.execute("ROLLBACK")
                 return AdmissionResult(False, "effect_envelope_exceeded")
             admission = OperationAdmission(str(uuid.uuid4()), attempt.attempt_id, capability_id, hashlib.sha256(canonical).hexdigest(), canonical)
-            c.execute(
-                "INSERT INTO operation_admissions(admission_id, attempt_id, capability_id, operation_digest, canonical_operation) VALUES (?, ?, ?, ?, ?)",
-                (admission.admission_id, admission.attempt_id, admission.capability_id, admission.operation_digest, admission.canonical_operation),
-            )
+            c.execute("INSERT INTO operation_admissions(admission_id, attempt_id, capability_id, operation_digest, canonical_operation) VALUES (?, ?, ?, ?, ?)", (admission.admission_id, admission.attempt_id, admission.capability_id, admission.operation_digest, admission.canonical_operation))
             c.execute("COMMIT")
             return AdmissionResult(True, "admitted", admission)
         except BaseException:
@@ -225,12 +238,7 @@ class Kernel(G2Kernel):
         if payload.get("operation_type") != "put_if_version":
             return None, "invalid_admitted_operation", digest
         try:
-            op = PutIfVersionOperation(
-                str(payload["resource"]),
-                int(payload["expected_version"]),
-                str(payload["value"]),
-                frozenset(payload["possible_effects"]),
-            )
+            op = PutIfVersionOperation(str(payload["resource"]), int(payload["expected_version"]), str(payload["value"]), frozenset(payload["possible_effects"]))
             if op.canonical_bytes() != canonical:
                 return None, "noncanonical_admitted_operation", digest
         except (KeyError, TypeError, ValueError):
@@ -276,14 +284,11 @@ class Kernel(G2Kernel):
             if current is None:
                 t.execute("INSERT INTO resources(resource, value, version) VALUES (?, ?, ?)", (op.resource, op.value, after))
             else:
-                t.execute("UPDATE resources SET value = ?, version = ? WHERE resource = ? AND version = ?", (op.value, after, op.resource, current_version))
-                if t.total_changes < 1:
+                cur = t.execute("UPDATE resources SET value = ?, version = ? WHERE resource = ? AND version = ?", (op.value, after, op.resource, current_version))
+                if cur.rowcount != 1:
                     t.execute("ROLLBACK")
                     return PutResult(False, "stale_version", op.resource, current_version, current_version, operation_digest=digest)
-            t.execute(
-                "INSERT INTO mutation_provenance(mutation_id, admission_id, operation_digest, resource, before_version, after_version, value, committed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (mutation_id, admission_id, digest, op.resource, current_version, after, op.value, int(self._clock())),
-            )
+            t.execute("INSERT INTO mutation_provenance(mutation_id, admission_id, operation_digest, resource, before_version, after_version, value, committed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", (mutation_id, admission_id, digest, op.resource, current_version, after, op.value, int(self._clock())))
             t.execute("COMMIT")
         except BaseException:
             if t.in_transaction:
@@ -294,6 +299,9 @@ class Kernel(G2Kernel):
 
         if crash_point == "after_mutation_before_control_completion":
             return PutResult(True, "crash_after_mutation_before_control_completion", op.resource, current_version, after, mutation_id, digest)
+
+        with self._connect() as c:
+            c.execute("INSERT INTO g3_execution_completions(admission_id, mutation_id, completed_at) VALUES (?, ?, ?)", (admission_id, mutation_id, int(self._clock())))
         return PutResult(True, "executed", op.resource, current_version, after, mutation_id, digest)
 
     def assess_compliance(self, admission: OperationAdmission, observation: Observation, *, supported_possible_effects: FrozenSet[str]) -> ComplianceResult:
@@ -333,11 +341,18 @@ class DishonestPrimitive:
         return frozenset({"A"})
 
     @staticmethod
-    def actual_effects() -> FrozenSet[str]:
+    def execute(target_db: str | Path) -> FrozenSet[str]:
+        c = sqlite3.connect(str(target_db))
+        try:
+            c.execute("INSERT OR REPLACE INTO resources(resource, value, version) VALUES ('A', 'mutant-A', 1)")
+            c.execute("INSERT OR REPLACE INTO resources(resource, value, version) VALUES ('B', 'mutant-B', 1)")
+            c.commit()
+        finally:
+            c.close()
         return frozenset({"A", "B"})
 
     @classmethod
-    def diagnostic(cls) -> ComplianceResult:
+    def diagnostic(cls, actual: Optional[FrozenSet[str]] = None) -> ComplianceResult:
         declared = cls.declared_possible_effects()
-        actual = cls.actual_effects()
-        return ComplianceResult("FAIL", "effect_model_unsound", actual, declared)
+        actual_effects = cls.execute if False else (actual if actual is not None else frozenset({"A", "B"}))
+        return ComplianceResult("FAIL", "effect_model_unsound", actual_effects, declared)
