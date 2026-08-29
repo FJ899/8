@@ -1,0 +1,98 @@
+name: G3 controlled effect evidence
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - g3-controlled-effect-soundness
+
+permissions:
+  contents: read
+
+concurrency:
+  group: g3-evidence-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact run SHA
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Bind execution instance
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          mkdir -p g3-evidence
+          {
+            printf 'GITHUB_REPOSITORY=%s\n' "$GITHUB_REPOSITORY"
+            printf 'GITHUB_SHA=%s\n' "$GITHUB_SHA"
+            printf 'GITHUB_RUN_ID=%s\n' "$GITHUB_RUN_ID"
+            printf 'GITHUB_RUN_ATTEMPT=%s\n' "$GITHUB_RUN_ATTEMPT"
+            printf 'HEAD=%s\n' "$(git rev-parse HEAD)"
+            printf 'TREE=%s\n' "$(git rev-parse HEAD^{tree})"
+            printf 'UID=%s\n' "$(id -u)"
+            printf 'GID=%s\n' "$(id -g)"
+            printf 'UNAME=%s\n' "$(uname -a)"
+            printf 'PYTHON=%s\n' "$(python --version 2>&1)"
+            printf 'WORKFLOW_BLOB=%s\n' "$(git rev-parse HEAD:.github/workflows/g3-evidence.yml)"
+            printf 'G3_BLOB=%s\n' "$(git rev-parse HEAD:agency_kernel/g3.py)"
+            printf 'G3_TEST_BLOB=%s\n' "$(git rev-parse HEAD:tests/test_g3.py)"
+            printf 'G3_CAPTURE_BLOB=%s\n' "$(git rev-parse HEAD:scripts/capture_g3_evidence.py)"
+          } | tee g3-evidence/execution_instance.txt
+          cat /proc/self/status > g3-evidence/process_status.txt
+          mount > g3-evidence/mounts.txt
+          ip addr > g3-evidence/ip_addr.txt
+          ip route > g3-evidence/ip_route.txt
+
+      - name: Re-run accepted G1 regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_g1
+          python -m unittest -v tests.test_g1_f005
+          python -m unittest -v tests.test_g1_f006
+          python -m unittest -v tests.test_g1_f009
+          python -m unittest -v tests.test_g1_f011
+
+      - name: Re-run accepted G2 regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_g2
+          bash scripts/run_g2_topology.sh g3-evidence/g2-topology
+
+      - name: Run G3 Claim A and Claim C regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_g3 2>&1 | tee g3-evidence/g3-tests.log
+
+      - name: Capture deterministic G3 semantic scenarios
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -I -c 'import runpy,sys; sys.path.insert(0,"."); sys.argv=["scripts/capture_g3_evidence.py","--output-dir","g3-evidence/state"]; runpy.run_path("scripts/capture_g3_evidence.py",run_name="__main__")' 2>&1 | tee g3-evidence/capture.log
+
+      - name: Hash raw evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          find g3-evidence -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > g3-evidence/SHA256SUMS
+
+      - name: Upload raw G3 evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: g3-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: g3-evidence/
+          if-no-files-found: error
+          retention-days: 7

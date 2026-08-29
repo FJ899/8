@@ -1,0 +1,119 @@
+name: G4 sanitized Git transfer evidence
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - g4-sanitized-git-transfer
+
+permissions:
+  contents: read
+
+concurrency:
+  group: g4-evidence-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  evidence:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact run SHA
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Bind execution instance
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          mkdir -p g4-evidence
+          {
+            printf 'GITHUB_REPOSITORY=%s\n' "$GITHUB_REPOSITORY"
+            printf 'GITHUB_SHA=%s\n' "$GITHUB_SHA"
+            printf 'GITHUB_RUN_ID=%s\n' "$GITHUB_RUN_ID"
+            printf 'GITHUB_RUN_ATTEMPT=%s\n' "$GITHUB_RUN_ATTEMPT"
+            printf 'HEAD=%s\n' "$(git rev-parse HEAD)"
+            printf 'TREE=%s\n' "$(git rev-parse HEAD^{tree})"
+            printf 'UID=%s\n' "$(id -u)"
+            printf 'GID=%s\n' "$(id -g)"
+            printf 'UNAME=%s\n' "$(uname -a)"
+            printf 'PYTHON=%s\n' "$(python --version 2>&1)"
+            printf 'GIT=%s\n' "$(git --version)"
+            printf 'WORKFLOW_BLOB=%s\n' "$(git rev-parse HEAD:.github/workflows/g4-evidence.yml)"
+            printf 'G4_BLOB=%s\n' "$(git rev-parse HEAD:agency_kernel/g4.py)"
+            printf 'G4_TEST_BLOB=%s\n' "$(git rev-parse HEAD:tests/test_g4.py)"
+            printf 'G4_CORRECTION_TEST_BLOB=%s\n' "$(git rev-parse HEAD:tests/test_g4_f001_f002.py)"
+            printf 'G4_F003_TEST_BLOB=%s\n' "$(git rev-parse HEAD:tests/test_g4_f003.py)"
+            printf 'G4_F005_TEST_BLOB=%s\n' "$(git rev-parse HEAD:tests/test_g4_f005.py)"
+            printf 'G4_CAPTURE_BLOB=%s\n' "$(git rev-parse HEAD:scripts/capture_g4_evidence.py)"
+            printf 'G4_CORRECTION_CAPTURE_BLOB=%s\n' "$(git rev-parse HEAD:scripts/capture_g4_f001_f002.py)"
+            printf 'G4_BROKER_BLOB=%s\n' "$(git rev-parse HEAD:scripts/g4_broker.py)"
+            printf 'G4_TOPOLOGY_BLOB=%s\n' "$(git rev-parse HEAD:scripts/run_g4_topology.sh)"
+          } | tee g4-evidence/execution_instance.txt
+          cat /proc/self/status > g4-evidence/process_status.txt
+          mount > g4-evidence/mounts.txt
+          ip addr > g4-evidence/ip_addr.txt
+          ip route > g4-evidence/ip_route.txt
+          git config --list --show-origin > g4-evidence/runner_git_config.txt
+
+      - name: Re-run locked G1 regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_g1
+          python -m unittest -v tests.test_g1_f005
+          python -m unittest -v tests.test_g1_f006
+          python -m unittest -v tests.test_g1_f009
+          python -m unittest -v tests.test_g1_f011
+
+      - name: Re-run locked G2 regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_g2
+          bash scripts/run_g2_topology.sh g4-evidence/g2-topology
+
+      - name: Re-run locked G3 regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_g3
+
+      - name: Run G4 transfer regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_g4 tests.test_g4_f001_f002 tests.test_g4_f003 tests.test_g4_f005 2>&1 | tee g4-evidence/g4-tests.log
+
+      - name: Run G4 hostile topology
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/run_g4_topology.sh g4-evidence/g4-topology
+
+      - name: Capture deterministic G4 semantic evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -I -c 'import runpy,sys; sys.path.insert(0,"."); sys.argv=["scripts/capture_g4_evidence.py","--output-dir","g4-evidence/state"]; runpy.run_path("scripts/capture_g4_evidence.py",run_name="__main__")' 2>&1 | tee g4-evidence/capture.log
+          python -I -c 'import runpy,sys; sys.path.insert(0,"."); sys.argv=["scripts/capture_g4_f001_f002.py","--output","g4-evidence/state/g4_f001_f002.json"]; runpy.run_path("scripts/capture_g4_f001_f002.py",run_name="__main__")' 2>&1 | tee g4-evidence/capture-f001-f002.log
+
+      - name: Hash raw evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          find g4-evidence -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > g4-evidence/SHA256SUMS
+
+      - name: Upload raw G4 evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: g4-evidence-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: g4-evidence/
+          if-no-files-found: error
+          retention-days: 7
