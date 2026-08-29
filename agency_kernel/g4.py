@@ -107,7 +107,13 @@ class SanitizedGitRepo:
         os.chmod(self.hooks_dir, 0o700)
         if not self.repo.exists():
             self.repo.parent.mkdir(parents=True, exist_ok=True)
-            subprocess.run(["git", "init", "--bare", str(self.repo)], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            subprocess.run(
+                ["git", "init", "--bare", str(self.repo)],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
         self._configure()
         self._ensure_initial_ref()
 
@@ -115,29 +121,46 @@ class SanitizedGitRepo:
         env = dict(os.environ)
         for key in list(env):
             if key in {
-                "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR",
-                "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_EXEC_PATH",
-                "GIT_CONFIG_COUNT", "GIT_CONFIG_SYSTEM", "GIT_SSH", "GIT_SSH_COMMAND",
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+                "GIT_OBJECT_DIRECTORY",
+                "GIT_COMMON_DIR",
+                "GIT_DIR",
+                "GIT_WORK_TREE",
+                "GIT_INDEX_FILE",
+                "GIT_EXEC_PATH",
+                "GIT_CONFIG_COUNT",
+                "GIT_CONFIG_SYSTEM",
+                "GIT_SSH",
+                "GIT_SSH_COMMAND",
                 "GIT_ASKPASS",
             } or key.startswith("GIT_CONFIG_KEY_") or key.startswith("GIT_CONFIG_VALUE_"):
                 env.pop(key, None)
-        env.update({
-            "GIT_CONFIG_NOSYSTEM": "1",
-            "GIT_CONFIG_GLOBAL": os.devnull,
-            "GIT_TERMINAL_PROMPT": "0",
-            "HOME": str(self.repo.parent),
-            "GIT_AUTHOR_NAME": "Agency Kernel Broker",
-            "GIT_AUTHOR_EMAIL": "broker@example.invalid",
-            "GIT_COMMITTER_NAME": "Agency Kernel Broker",
-            "GIT_COMMITTER_EMAIL": "broker@example.invalid",
-            "GIT_AUTHOR_DATE": "2000-01-01T00:00:00+00:00",
-            "GIT_COMMITTER_DATE": "2000-01-01T00:00:00+00:00",
-        })
+        env.update(
+            {
+                "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_CONFIG_GLOBAL": os.devnull,
+                "GIT_TERMINAL_PROMPT": "0",
+                "HOME": str(self.repo.parent),
+                "GIT_AUTHOR_NAME": "Agency Kernel Broker",
+                "GIT_AUTHOR_EMAIL": "broker@example.invalid",
+                "GIT_COMMITTER_NAME": "Agency Kernel Broker",
+                "GIT_COMMITTER_EMAIL": "broker@example.invalid",
+                "GIT_AUTHOR_DATE": "2000-01-01T00:00:00+00:00",
+                "GIT_COMMITTER_DATE": "2000-01-01T00:00:00+00:00",
+            }
+        )
         if extra:
             env.update(extra)
         return env
 
-    def git(self, *args: str, input_text: Optional[str] = None, check: bool = True, extra_env: Optional[dict[str, str]] = None, strip_output: bool = True) -> str:
+    def git(
+        self,
+        *args: str,
+        input_text: Optional[str] = None,
+        check: bool = True,
+        extra_env: Optional[dict[str, str]] = None,
+        strip_output: bool = True,
+    ) -> str:
         cp = subprocess.run(
             ["git", "--git-dir", str(self.repo), *args],
             input=input_text,
@@ -239,7 +262,12 @@ class SanitizedGitRepo:
         return frozenset(line for line in out.splitlines() if line)
 
     def create_commit(self, tree_oid: str, old_oid: str, admission_id: str, operation_digest: str) -> str:
-        message = f"agency-kernel-admission:{admission_id}\noperation-digest:{operation_digest}\ntree:{tree_oid}\nexpected-old:{old_oid}\n"
+        message = (
+            f"agency-kernel-admission:{admission_id}\n"
+            f"operation-digest:{operation_digest}\n"
+            f"tree:{tree_oid}\n"
+            f"expected-old:{old_oid}\n"
+        )
         return self.git("commit-tree", tree_oid, "-p", old_oid, input_text=message)
 
     def cas_update(self, new_oid: str, expected_old_oid: str) -> bool:
@@ -296,7 +324,9 @@ class Kernel(G2Kernel):
         self.protected_ref = protected_ref
         super().__init__(control_db, Path(str(repo_path) + ".unused-g2-boundary"), clock=clock)
         with self._connect() as c:
-            c.execute("CREATE TABLE IF NOT EXISTS g4_execution_completions (admission_id TEXT PRIMARY KEY REFERENCES operation_admissions(admission_id), commit_oid TEXT NOT NULL, completed_at INTEGER NOT NULL)")
+            c.execute(
+                "CREATE TABLE IF NOT EXISTS g4_execution_completions (admission_id TEXT PRIMARY KEY REFERENCES operation_admissions(admission_id), commit_oid TEXT NOT NULL, completed_at INTEGER NOT NULL)"
+            )
 
     def has_control_completion(self, admission_id: str) -> bool:
         with self._connect() as c:
@@ -313,13 +343,15 @@ class Kernel(G2Kernel):
     def required_possible_effects(self, operation: GitTreeOperation) -> FrozenSet[str]:
         old_tree = self.git_repo.tree_oid(operation.expected_old_oid)
         new_tree = self.git_repo.build_tree(operation.files)
+        if old_tree == new_tree:
+            return frozenset()
         changed = self.git_repo.changed_paths(old_tree, new_tree)
         return frozenset({self.ref_effect(operation.protected_ref), *(self.path_effect(p) for p in changed)})
 
     def admit_git_operation(self, attempt: ActionAttempt, capability_id: str, operation: GitTreeOperation) -> AdmissionResult:
         try:
             canonical = operation.canonical_bytes()
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, UnicodeError):
             return AdmissionResult(False, "invalid_operation")
         if operation.protected_ref != self.protected_ref:
             return AdmissionResult(False, "protected_ref_mismatch")
@@ -329,10 +361,13 @@ class Kernel(G2Kernel):
             return AdmissionResult(False, "stale_ref")
         try:
             required = self.required_possible_effects(operation)
-        except (RuntimeError, ValueError):
+        except (RuntimeError, ValueError, UnicodeError):
             return AdmissionResult(False, "invalid_expected_ref_state")
+        if not required:
+            return AdmissionResult(False, "no_target_change")
         if not required.issubset(operation.possible_effects):
             return AdmissionResult(False, "effect_model_underapproximation")
+
         c = self._connect()
         try:
             c.execute("BEGIN IMMEDIATE")
@@ -340,7 +375,9 @@ class Kernel(G2Kernel):
             if row is None:
                 c.execute("ROLLBACK")
                 return AdmissionResult(False, "invalid_attempt")
-            if (row["authorization_id"], row["principal_id"], row["intent_id"], row["contract_id"]) != (attempt.authorization_id, attempt.principal_id, attempt.intent_id, attempt.contract_id):
+            if (row["authorization_id"], row["principal_id"], row["intent_id"], row["contract_id"]) != (
+                attempt.authorization_id, attempt.principal_id, attempt.intent_id, attempt.contract_id
+            ):
                 c.execute("ROLLBACK")
                 return AdmissionResult(False, "forged_attempt")
             authority = self._specific_grant_status(c, row["grant_id"], row["principal_id"], row["intent_id"], int(self._clock()))
@@ -360,12 +397,19 @@ class Kernel(G2Kernel):
             if cap["resource"] != self.protected_ref:
                 c.execute("ROLLBACK")
                 return AdmissionResult(False, "capability_resource_mismatch")
-            envelope = frozenset(r["effect"] for r in c.execute("SELECT effect FROM effect_envelopes WHERE contract_id = ?", (row["contract_id"],)).fetchall())
+            envelope = frozenset(
+                r["effect"] for r in c.execute("SELECT effect FROM effect_envelopes WHERE contract_id = ?", (row["contract_id"],)).fetchall()
+            )
             if not operation.possible_effects.issubset(envelope):
                 c.execute("ROLLBACK")
                 return AdmissionResult(False, "effect_envelope_exceeded")
-            admission = OperationAdmission(str(uuid.uuid4()), attempt.attempt_id, capability_id, hashlib.sha256(canonical).hexdigest(), canonical)
-            c.execute("INSERT INTO operation_admissions(admission_id, attempt_id, capability_id, operation_digest, canonical_operation) VALUES (?, ?, ?, ?, ?)", (admission.admission_id, admission.attempt_id, admission.capability_id, admission.operation_digest, admission.canonical_operation))
+            admission = OperationAdmission(
+                str(uuid.uuid4()), attempt.attempt_id, capability_id, hashlib.sha256(canonical).hexdigest(), canonical
+            )
+            c.execute(
+                "INSERT INTO operation_admissions(admission_id, attempt_id, capability_id, operation_digest, canonical_operation) VALUES (?, ?, ?, ?, ?)",
+                (admission.admission_id, admission.attempt_id, admission.capability_id, admission.operation_digest, admission.canonical_operation),
+            )
             c.execute("COMMIT")
             return AdmissionResult(True, "admitted", admission)
         except BaseException:
@@ -391,14 +435,16 @@ class Kernel(G2Kernel):
             if op.canonical_bytes() != canonical:
                 return None, "noncanonical_admitted_operation", digest
             return op, None, digest
-        except (KeyError, TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError):
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError, UnicodeDecodeError, UnicodeError):
             return None, "invalid_admitted_operation", digest
 
     def execute_git_admission(self, admission_id: str, *, crash_point: Optional[str] = None) -> GitExecutionResult:
         c = self._connect()
         try:
             c.execute("BEGIN IMMEDIATE")
-            row = c.execute("SELECT operation_digest, canonical_operation FROM operation_admissions WHERE admission_id = ?", (admission_id,)).fetchone()
+            row = c.execute(
+                "SELECT operation_digest, canonical_operation FROM operation_admissions WHERE admission_id = ?", (admission_id,)
+            ).fetchone()
             if row is None:
                 c.execute("ROLLBACK")
                 return GitExecutionResult(False, "admission_absent", self.protected_ref)
@@ -413,10 +459,14 @@ class Kernel(G2Kernel):
             c.execute("COMMIT")
         finally:
             c.close()
+
         current = self.git_repo.rev_parse_ref()
         if current != op.expected_old_oid:
             return GitExecutionResult(False, "stale_ref", self.protected_ref, current, current, operation_digest=digest)
+        old_tree = self.git_repo.tree_oid(current)
         new_tree = self.git_repo.build_tree(op.files)
+        if new_tree == old_tree:
+            return GitExecutionResult(False, "no_target_change", self.protected_ref, current, current, new_tree, digest)
         if crash_point == "before_ref_cas":
             return GitExecutionResult(False, "crash_before_ref_cas", self.protected_ref, current, current, new_tree, digest)
         new_commit = self.git_repo.create_commit(new_tree, op.expected_old_oid, admission_id, digest)
@@ -424,9 +474,14 @@ class Kernel(G2Kernel):
             now = self.git_repo.rev_parse_ref()
             return GitExecutionResult(False, "stale_ref", self.protected_ref, op.expected_old_oid, now, new_tree, digest)
         if crash_point == "after_ref_cas_before_control_completion":
-            return GitExecutionResult(True, "crash_after_ref_cas_before_control_completion", self.protected_ref, op.expected_old_oid, new_commit, new_tree, digest)
+            return GitExecutionResult(
+                True, "crash_after_ref_cas_before_control_completion", self.protected_ref, op.expected_old_oid, new_commit, new_tree, digest
+            )
         with self._connect() as c:
-            c.execute("INSERT INTO g4_execution_completions(admission_id, commit_oid, completed_at) VALUES (?, ?, ?)", (admission_id, new_commit, int(self._clock())))
+            c.execute(
+                "INSERT INTO g4_execution_completions(admission_id, commit_oid, completed_at) VALUES (?, ?, ?)",
+                (admission_id, new_commit, int(self._clock())),
+            )
         return GitExecutionResult(True, "executed", self.protected_ref, op.expected_old_oid, new_commit, new_tree, digest)
 
     def did(self, admission: OperationAdmission, observation: GitObservation) -> bool:
@@ -437,10 +492,18 @@ class Kernel(G2Kernel):
         if observation.metadata_tree_oid != observation.tree_oid or observation.expected_old_oid != observation.parent_oid:
             return False
         with self._connect() as c:
-            row = c.execute("SELECT operation_digest FROM operation_admissions WHERE admission_id = ?", (admission.admission_id,)).fetchone()
+            row = c.execute(
+                "SELECT operation_digest FROM operation_admissions WHERE admission_id = ?", (admission.admission_id,)
+            ).fetchone()
             return row is not None and row["operation_digest"] == admission.operation_digest
 
-    def assess_compliance(self, admission: OperationAdmission, observation: GitObservation, *, supported_possible_effects: FrozenSet[str]) -> ComplianceResult:
+    def assess_compliance(
+        self,
+        admission: OperationAdmission,
+        observation: GitObservation,
+        *,
+        supported_possible_effects: FrozenSet[str],
+    ) -> ComplianceResult:
         if not observation.covered:
             return ComplianceResult("INDETERMINATE", "missing_coverage", frozenset(), supported_possible_effects)
         if observation.attribution_ambiguous:
