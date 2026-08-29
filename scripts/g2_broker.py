@@ -34,6 +34,13 @@ def peer_uid(conn: socket.socket) -> int:
     return uid
 
 
+def safe_operation_digest(operation: TechnicalOperation) -> str | None:
+    try:
+        return operation.operation_digest
+    except (TypeError, ValueError):
+        return None
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--socket", required=True)
@@ -122,7 +129,7 @@ def main() -> int:
                         "reason": admission.reason,
                         "peer_uid": uid,
                         "principal_id": authorization.authorization.principal_id,
-                        "operation_digest": operation.operation_digest if effects is not None else None,
+                        "operation_digest": safe_operation_digest(operation),
                     })
                     continue
 
