@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import sqlite3
 import subprocess
 import tempfile
 import uuid
@@ -12,7 +11,7 @@ from pathlib import Path, PurePosixPath
 from typing import FrozenSet, Iterable, Optional
 
 from .g1 import ActionAttempt
-from .g2 import AdmissionResult, Capability, Kernel as G2Kernel, OperationAdmission
+from .g2 import AdmissionResult, Kernel as G2Kernel, OperationAdmission
 from .g3 import AcceptanceResult, ComplianceResult
 
 
@@ -47,21 +46,25 @@ class GitTreeOperation:
         if len(self.expected_old_oid) != 40 or any(ch not in "0123456789abcdef" for ch in self.expected_old_oid):
             raise ValueError("invalid_expected_old_oid")
         seen: set[str] = set()
-        encoded_files = []
+        encoded = []
         for item in sorted(self.files, key=lambda x: x.path):
             if not _safe_path(item.path) or item.path in seen:
                 raise ValueError("invalid_path")
             seen.add(item.path)
-            encoded_files.append({"path": item.path, "content": item.content})
+            encoded.append({"path": item.path, "content": item.content})
         effects = None if self.possible_effects is None else sorted(self.possible_effects)
-        payload = {
-            "operation_type": "sanitized_git_replace_tree",
-            "protected_ref": self.protected_ref,
-            "expected_old_oid": self.expected_old_oid,
-            "files": encoded_files,
-            "possible_effects": effects,
-        }
-        return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        return json.dumps(
+            {
+                "operation_type": "sanitized_git_replace_tree",
+                "protected_ref": self.protected_ref,
+                "expected_old_oid": self.expected_old_oid,
+                "files": encoded,
+                "possible_effects": effects,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        ).encode("utf-8")
 
     @property
     def operation_digest(self) -> str:
@@ -109,9 +112,18 @@ class SanitizedGitRepo:
 
     def _env(self, extra: Optional[dict[str, str]] = None) -> dict[str, str]:
         env = dict(os.environ)
+        for key in list(env):
+            if key in {
+                "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR",
+                "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_EXEC_PATH",
+                "GIT_CONFIG_COUNT", "GIT_CONFIG_SYSTEM", "GIT_SSH", "GIT_SSH_COMMAND",
+                "GIT_ASKPASS",
+            } or key.startswith("GIT_CONFIG_KEY_") or key.startswith("GIT_CONFIG_VALUE_"):
+                env.pop(key, None)
         env.update({
             "GIT_CONFIG_NOSYSTEM": "1",
             "GIT_CONFIG_GLOBAL": os.devnull,
+            "GIT_TERMINAL_PROMPT": "0",
             "HOME": str(self.repo.parent),
             "GIT_AUTHOR_NAME": "Agency Kernel Broker",
             "GIT_AUTHOR_EMAIL": "broker@example.invalid",
@@ -120,14 +132,18 @@ class SanitizedGitRepo:
             "GIT_AUTHOR_DATE": "2000-01-01T00:00:00+00:00",
             "GIT_COMMITTER_DATE": "2000-01-01T00:00:00+00:00",
         })
-        env.pop("GIT_ALTERNATE_OBJECT_DIRECTORIES", None)
-        env.pop("GIT_OBJECT_DIRECTORY", None)
-        env.pop("GIT_COMMON_DIR", None)
         if extra:
             env.update(extra)
         return env
 
-    def git(self, *args: str, input_text: Optional[str] = None, check: bool = True, extra_env: Optional[dict[str, str]] = None) -> str:
+    def git(
+        self,
+        *args: str,
+        input_text: Optional[str] = None,
+        check: bool = True,
+        extra_env: Optional[dict[str, str]] = None,
+        strip_output: bool = True,
+    ) -> str:
         cp = subprocess.run(
             ["git", "--git-dir", str(self.repo), *args],
             input=input_text,
@@ -138,7 +154,7 @@ class SanitizedGitRepo:
         )
         if check and cp.returncode != 0:
             raise RuntimeError(f"git_failed:{args!r}:{cp.stderr.strip()}")
-        return cp.stdout.strip()
+        return cp.stdout.strip() if strip_output else cp.stdout
 
     def _configure(self) -> None:
         self.git("config", "core.hooksPath", str(self.hooks_dir))
@@ -150,8 +166,7 @@ class SanitizedGitRepo:
             alternates.unlink()
 
     def _ensure_initial_ref(self) -> None:
-        current = self.rev_parse_ref(allow_missing=True)
-        if current is not None:
+        if self.rev_parse_ref(allow_missing=True) is not None:
             return
         tree = self.git("mktree", input_text="")
         commit = self.git("commit-tree", tree, input_text="agency-kernel-initial\n")
@@ -176,20 +191,22 @@ class SanitizedGitRepo:
 
     def list_files(self, commit_oid: str) -> tuple[tuple[str, str], ...]:
         paths = [p for p in self.git("ls-tree", "-r", "--name-only", commit_oid).splitlines() if p]
-        result = []
+        result: list[tuple[str, str]] = []
         for path in paths:
-            content = self.git("show", f"{commit_oid}:{path}")
+            content = self.git("show", f"{commit_oid}:{path}", strip_output=False)
             result.append((path, content))
         return tuple(sorted(result))
 
     def build_tree(self, files: Iterable[GitFile]) -> str:
-        index_fd, index_path = tempfile.mkstemp(prefix="g4-index-", dir=str(self.repo.parent))
-        os.close(index_fd)
+        fd, index_path = tempfile.mkstemp(prefix="g4-index-", dir=str(self.repo.parent))
+        os.close(fd)
         try:
             os.unlink(index_path)
             env = {"GIT_INDEX_FILE": index_path}
             self.git("read-tree", "--empty", extra_env=env)
             for item in sorted(files, key=lambda x: x.path):
+                if not _safe_path(item.path):
+                    raise ValueError("invalid_path")
                 blob = self.git("hash-object", "-w", "--stdin", input_text=item.content)
                 self.git("update-index", "--add", "--cacheinfo", f"100644,{blob},{item.path}", extra_env=env)
             return self.git("write-tree", extra_env=env)
@@ -223,8 +240,7 @@ class SanitizedGitRepo:
         return cp.returncode == 0
 
     def commit_metadata(self, oid: str) -> tuple[Optional[str], Optional[str], Optional[str], Optional[str], Optional[str]]:
-        raw = self.git("show", "-s", "--format=%P%n%B", oid)
-        lines = raw.splitlines()
+        lines = self.git("show", "-s", "--format=%P%n%B", oid).splitlines()
         parent = lines[0].split()[0] if lines and lines[0].strip() else None
         values: dict[str, str] = {}
         for line in lines[1:]:
@@ -259,24 +275,15 @@ class GitObserver:
 
 
 class Kernel(G2Kernel):
-    """G4 transfer adapter for one sanitized protected Git ref; frozen kernel semantics are unchanged."""
+    """G4 adapter for the tree reachable from one sanitized protected Git ref."""
 
     def __init__(self, control_db: str | Path, repo_path: str | Path, protected_ref: str = PROTECTED_REF_DEFAULT, clock=None):
         self.git_repo = SanitizedGitRepo(repo_path, protected_ref)
         self.protected_ref = protected_ref
         super().__init__(control_db, Path(str(repo_path) + ".unused-g2-boundary"), clock=clock)
-        self._initialize_g4_schema()
-
-    def _initialize_g4_schema(self) -> None:
         with self._connect() as c:
             c.execute(
-                """
-                CREATE TABLE IF NOT EXISTS g4_execution_completions (
-                    admission_id TEXT PRIMARY KEY REFERENCES operation_admissions(admission_id),
-                    commit_oid TEXT NOT NULL,
-                    completed_at INTEGER NOT NULL
-                )
-                """
+                "CREATE TABLE IF NOT EXISTS g4_execution_completions (admission_id TEXT PRIMARY KEY REFERENCES operation_admissions(admission_id), commit_oid TEXT NOT NULL, completed_at INTEGER NOT NULL)"
             )
 
     def has_control_completion(self, admission_id: str) -> bool:
@@ -306,12 +313,11 @@ class Kernel(G2Kernel):
             return AdmissionResult(False, "protected_ref_mismatch")
         if operation.possible_effects is None:
             return AdmissionResult(False, "unknown_possible_effects")
-        current = self.git_repo.rev_parse_ref()
-        if current != operation.expected_old_oid:
+        if self.git_repo.rev_parse_ref() != operation.expected_old_oid:
             return AdmissionResult(False, "stale_ref")
         try:
             required = self.required_possible_effects(operation)
-        except RuntimeError:
+        except (RuntimeError, ValueError):
             return AdmissionResult(False, "invalid_expected_ref_state")
         if not required.issubset(operation.possible_effects):
             return AdmissionResult(False, "effect_model_underapproximation")
@@ -423,9 +429,7 @@ class Kernel(G2Kernel):
             return False
         if observation.admission_id != admission.admission_id or observation.operation_digest != admission.operation_digest:
             return False
-        if observation.metadata_tree_oid != observation.tree_oid:
-            return False
-        if observation.expected_old_oid != observation.parent_oid:
+        if observation.metadata_tree_oid != observation.tree_oid or observation.expected_old_oid != observation.parent_oid:
             return False
         with self._connect() as c:
             row = c.execute("SELECT operation_digest FROM operation_admissions WHERE admission_id = ?", (admission.admission_id,)).fetchone()
@@ -459,7 +463,6 @@ class Kernel(G2Kernel):
         return AcceptanceResult(passed, reason)
 
     def inject_unattributed_ref_for_test(self, files: tuple[GitFile, ...]) -> str:
-        """Adversarial test hook: mutate the protected ref without Agency Kernel provenance metadata."""
         old = self.git_repo.rev_parse_ref()
         tree = self.git_repo.build_tree(files)
         commit = self.git_repo.git("commit-tree", tree, "-p", old, input_text="unattributed external mutation\n")
