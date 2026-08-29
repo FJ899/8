@@ -51,7 +51,16 @@ def main() -> int:
         exe = k.execute_put_if_version_admission(adm.admission.admission_id)
         obs = observer.observe("X")
         comp = k.assess_compliance(adm.admission, obs, supported_possible_effects=op.possible_effects)
-        scenarios["positive"] = {"admitted": adm.allowed, "occurred": exe.occurred, "did": k.did(adm.admission, obs), "compliance": comp.status, "satisfied": k.satisfied(obs, "after"), "actual_effects": sorted(comp.actual_effects), "possible_effects": sorted(comp.possible_effects)}
+        scenarios["positive"] = {
+            "admitted": adm.allowed,
+            "occurred": exe.occurred,
+            "did": k.did(adm.admission, obs),
+            "compliance": comp.status,
+            "satisfied": k.satisfied(obs, "after"),
+            "control_completion": k.has_control_completion(adm.admission.admission_id),
+            "actual_effects": sorted(comp.actual_effects),
+            "possible_effects": sorted(comp.possible_effects),
+        }
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -59,7 +68,12 @@ def main() -> int:
         op = PutIfVersionOperation("X", 9, "stale", k.possible_effects_for("X"))
         adm = k.admit_put_if_version(attempt, "cap-X", op)
         exe = k.execute_put_if_version_admission(adm.admission.admission_id)
-        scenarios["stale_version"] = {"occurred": exe.occurred, "reason": exe.reason, "observed": observer.observe("X").value}
+        scenarios["stale_version"] = {
+            "occurred": exe.occurred,
+            "reason": exe.reason,
+            "observed": observer.observe("X").value,
+            "control_completion": k.has_control_completion(adm.admission.admission_id),
+        }
 
     with tempfile.TemporaryDirectory() as td:
         root = Path(td)
@@ -68,10 +82,45 @@ def main() -> int:
         adm = k.admit_put_if_version(attempt, "cap-X", op)
         exe = k.execute_put_if_version_admission(adm.admission.admission_id, crash_point="after_mutation_before_control_completion")
         obs = observer.observe("X")
-        scenarios["post_mutation_crash"] = {"occurred": exe.occurred, "reason": exe.reason, "did": k.did(adm.admission, obs), "mutation_id": obs.mutation_id, "replay": k.execute_put_if_version_admission(adm.admission.admission_id).reason}
+        scenarios["post_mutation_crash"] = {
+            "occurred": exe.occurred,
+            "reason": exe.reason,
+            "did": k.did(adm.admission, obs),
+            "mutation_id": obs.mutation_id,
+            "control_completion": k.has_control_completion(adm.admission.admission_id),
+            "replay": k.execute_put_if_version_admission(adm.admission.admission_id).reason,
+        }
 
-    mutant = DishonestPrimitive.diagnostic()
-    scenarios["dishonest_negative_control"] = {"compliance": mutant.status, "reason": mutant.reason, "actual_effects": sorted(mutant.actual_effects), "possible_effects": sorted(mutant.possible_effects), "tcb_assumption": "FALSIFIED_DETECTED"}
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        k, attempt, observer = seed(root)
+        op = PutIfVersionOperation("X", 0, "expected", k.possible_effects_for("X"))
+        adm = k.admit_put_if_version(attempt, "cap-X", op)
+        k.inject_unattributed_delta_for_test("X", "unattributed", 1)
+        obs = observer.observe("X")
+        comp = k.assess_compliance(adm.admission, obs, supported_possible_effects=op.possible_effects)
+        scenarios["observed_delta_without_provenance"] = {
+            "observed_value": obs.value,
+            "mutation_id": obs.mutation_id,
+            "did": k.did(adm.admission, obs),
+            "compliance": comp.status,
+            "reason": comp.reason,
+        }
+
+    with tempfile.TemporaryDirectory() as td:
+        root = Path(td)
+        k, _attempt, observer = seed(root)
+        actual = DishonestPrimitive.execute(root / "target.db")
+        diagnostic = DishonestPrimitive.diagnostic(actual)
+        scenarios["dishonest_negative_control"] = {
+            "effect_occurred": observer.observe("A").value == "mutant-A" and observer.observe("B").value == "mutant-B",
+            "compliance": diagnostic.status,
+            "reason": diagnostic.reason,
+            "actual_effects": sorted(diagnostic.actual_effects),
+            "possible_effects": sorted(diagnostic.possible_effects),
+            "effect_model": "UNSOUND",
+            "tcb_assumption": "FALSIFIED_DETECTED",
+        }
 
     evidence = out / "g3_state_evidence.json"
     evidence.write_text(json.dumps(scenarios, indent=2, sort_keys=True) + "\n", encoding="utf-8")
