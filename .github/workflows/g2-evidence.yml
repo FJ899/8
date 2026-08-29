@@ -1,0 +1,50 @@
+name: G2 implementation evidence
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - g2-capability-enforcement
+
+permissions:
+  contents: read
+
+concurrency:
+  group: g2-evidence-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  implementation-checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact run SHA
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Bind checkout to run candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          printf 'HEAD=%s\n' "$(git rev-parse HEAD)"
+          printf 'TREE=%s\n' "$(git rev-parse HEAD^{tree})"
+
+      - name: Re-run accepted G1 regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_g1
+          python -m unittest -v tests.test_g1_f005
+          python -m unittest -v tests.test_g1_f006
+          python -m unittest -v tests.test_g1_f009
+          python -m unittest -v tests.test_g1_f011
+
+      - name: Run G2 admission regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_g2
