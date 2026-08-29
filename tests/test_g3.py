@@ -55,6 +55,7 @@ class G3ControlledEffectSoundnessTests(unittest.TestCase):
         admission = self.admit(operation)
         result = self.kernel.execute_put_if_version_admission(admission.admission_id)
         self.assertTrue(result.occurred)
+        self.assertTrue(self.kernel.has_control_completion(admission.admission_id))
         observation = self.observer.observe("X")
         self.assertTrue(self.kernel.did(admission, observation))
         compliance = self.kernel.assess_compliance(admission, observation, supported_possible_effects=operation.possible_effects)
@@ -68,6 +69,7 @@ class G3ControlledEffectSoundnessTests(unittest.TestCase):
         result = self.kernel.execute_put_if_version_admission(admission.admission_id)
         self.assertFalse(result.occurred)
         self.assertEqual(result.reason, "stale_version")
+        self.assertFalse(self.kernel.has_control_completion(admission.admission_id))
         obs = self.observer.observe("X")
         self.assertEqual((obs.value, obs.version), ("initial", 0))
 
@@ -81,12 +83,16 @@ class G3ControlledEffectSoundnessTests(unittest.TestCase):
             barrier.wait()
             r = self.kernel.execute_put_if_version_admission(admission_id)
             with lock:
-                results.append(r)
+                results.append((admission_id, r))
         t1 = threading.Thread(target=run, args=(a1.admission_id,))
         t2 = threading.Thread(target=run, args=(a2.admission_id,))
         t1.start(); t2.start(); barrier.wait(); t1.join(); t2.join()
-        self.assertEqual(sum(1 for r in results if r.occurred), 1)
-        self.assertEqual(sum(1 for r in results if r.reason == "stale_version"), 1)
+        self.assertEqual(sum(1 for _, r in results if r.occurred), 1)
+        self.assertEqual(sum(1 for _, r in results if r.reason == "stale_version"), 1)
+        winner = next(aid for aid, r in results if r.occurred)
+        loser = next(aid for aid, r in results if not r.occurred)
+        self.assertTrue(self.kernel.has_control_completion(winner))
+        self.assertFalse(self.kernel.has_control_completion(loser))
         self.assertEqual(self.observer.observe("X").version, 1)
 
     def test_unknown_possible_effects_denies_pre_effect(self) -> None:
@@ -120,10 +126,21 @@ class G3ControlledEffectSoundnessTests(unittest.TestCase):
         compliance = self.kernel.assess_compliance(admission, obs, supported_possible_effects=self.kernel.possible_effects_for("X"))
         self.assertEqual((compliance.status, compliance.reason), ("INDETERMINATE", "ambiguous_attribution"))
 
+    def test_observed_delta_without_provenance_does_not_become_attribution(self) -> None:
+        admission = self.admit()
+        self.kernel.inject_unattributed_delta_for_test("X", "unattributed", 1)
+        obs = self.observer.observe("X")
+        self.assertEqual(obs.value, "unattributed")
+        self.assertIsNone(obs.mutation_id)
+        self.assertFalse(self.kernel.did(admission, obs))
+        compliance = self.kernel.assess_compliance(admission, obs, supported_possible_effects=self.kernel.possible_effects_for("X"))
+        self.assertEqual((compliance.status, compliance.reason), ("INDETERMINATE", "unresolved_attribution"))
+
     def test_crash_before_mutation_has_no_effect_and_no_blind_replay(self) -> None:
         admission = self.admit()
         result = self.kernel.execute_put_if_version_admission(admission.admission_id, crash_point="before_mutation")
         self.assertFalse(result.occurred)
+        self.assertFalse(self.kernel.has_control_completion(admission.admission_id))
         self.assertEqual(self.observer.observe("X").value, "initial")
         replay = self.kernel.execute_put_if_version_admission(admission.admission_id)
         self.assertFalse(replay.occurred)
@@ -133,6 +150,7 @@ class G3ControlledEffectSoundnessTests(unittest.TestCase):
         admission = self.admit()
         result = self.kernel.execute_put_if_version_admission(admission.admission_id, crash_point="after_admission_before_mutation")
         self.assertFalse(result.occurred)
+        self.assertFalse(self.kernel.has_control_completion(admission.admission_id))
         self.assertEqual(self.observer.observe("X").value, "initial")
         replay = self.kernel.execute_put_if_version_admission(admission.admission_id)
         self.assertEqual(replay.reason, "admission_consumed")
@@ -142,6 +160,7 @@ class G3ControlledEffectSoundnessTests(unittest.TestCase):
         admission = self.admit(operation)
         result = self.kernel.execute_put_if_version_admission(admission.admission_id, crash_point="after_mutation_before_control_completion")
         self.assertTrue(result.occurred)
+        self.assertFalse(self.kernel.has_control_completion(admission.admission_id))
         obs = self.observer.observe("X")
         self.assertTrue(self.kernel.did(admission, obs))
         compliance = self.kernel.assess_compliance(admission, obs, supported_possible_effects=operation.possible_effects)
@@ -177,14 +196,19 @@ class G3ControlledEffectSoundnessTests(unittest.TestCase):
         self.assertFalse(denied.allowed)
 
     def test_acceptance_pass_can_coexist_with_compliance_fail(self) -> None:
-        mutant = DishonestPrimitive.diagnostic()
+        actual = DishonestPrimitive.execute(self.target_db)
+        mutant = DishonestPrimitive.diagnostic(actual)
         acceptance = self.kernel.accept(True)
         self.assertTrue(acceptance.passed)
         self.assertEqual(mutant.status, "FAIL")
         self.assertFalse(self.kernel.within_scope(mutant))
 
-    def test_negative_control_dishonest_primitive_is_detected_as_unsound(self) -> None:
-        diagnostic = DishonestPrimitive.diagnostic()
+    def test_negative_control_dishonest_primitive_causes_real_a_plus_b_and_is_detected(self) -> None:
+        actual = DishonestPrimitive.execute(self.target_db)
+        self.assertEqual(actual, frozenset({"A", "B"}))
+        self.assertEqual(Observer(self.target_db).observe("A").value, "mutant-A")
+        self.assertEqual(Observer(self.target_db).observe("B").value, "mutant-B")
+        diagnostic = DishonestPrimitive.diagnostic(actual)
         self.assertEqual(diagnostic.status, "FAIL")
         self.assertEqual(diagnostic.reason, "effect_model_unsound")
         self.assertEqual(diagnostic.possible_effects, frozenset({"A"}))
