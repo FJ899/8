@@ -47,6 +47,7 @@ jobs:
             printf 'G4_BLOB=%s\n' "$(git rev-parse HEAD:agency_kernel/g4.py)"
             printf 'G4_TEST_BLOB=%s\n' "$(git rev-parse HEAD:tests/test_g4.py)"
             printf 'G4_CORRECTION_TEST_BLOB=%s\n' "$(git rev-parse HEAD:tests/test_g4_f001_f002.py)"
+            printf 'G4_F003_TEST_BLOB=%s\n' "$(git rev-parse HEAD:tests/test_g4_f003.py)"
             printf 'G4_CAPTURE_BLOB=%s\n' "$(git rev-parse HEAD:scripts/capture_g4_evidence.py)"
             printf 'G4_CORRECTION_CAPTURE_BLOB=%s\n' "$(git rev-parse HEAD:scripts/capture_g4_f001_f002.py)"
             printf 'G4_BROKER_BLOB=%s\n' "$(git rev-parse HEAD:scripts/g4_broker.py)"
@@ -85,7 +86,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m unittest -v tests.test_g4 tests.test_g4_f001_f002 2>&1 | tee g4-evidence/g4-tests.log
+          python -m unittest -v tests.test_g4 tests.test_g4_f001_f002 tests.test_g4_f003 2>&1 | tee g4-evidence/g4-tests.log
 
       - name: Run G4 hostile topology
         shell: bash
