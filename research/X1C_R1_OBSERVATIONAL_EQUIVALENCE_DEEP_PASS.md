@@ -28,356 +28,209 @@ This pass does not search for implementation mechanisms and does not authorize X
 - security ceremonies and formal human-protocol interaction;
 - formal FIDO2 analyses that explicitly model the Human.
 
-## 1. BAN-style and epistemic authentication logics
+## Strongest structural prior art found
 
-Authentication logics reason about what principals can conclude or believe from protocol evidence. Later epistemic foundations provide semantics in terms of possible states/worlds rather than treating protocol messages as self-interpreting assertions.
+The closest existing family is not BAN logic alone, but **agreement properties**, especially **injective agreement / correspondence**, embedded where useful in **security ceremonies** that explicitly model Human interaction.
 
-Relevant source:
-
-- Halpern & van der Meyden, `An Epistemic Foundation for Authentication Logics` — https://arxiv.org/abs/1707.08750
-
-### Relevance
-
-This family is close to the *form* of the X1C question because it asks when observed protocol evidence warrants a conclusion about another principal.
-
-### Residual mismatch
-
-The reviewed material does not provide a domain-independent primitive equivalent to:
+Structurally this can represent much of:
 
 ```text
-Human decided Content C within Scope S for Decision Instance I
+origin/peer
++ exact agreed data
++ unique matching instance/run
++ freshness / anti-replay
 ```
 
-The logics require a protocol semantics / interpretation of events. They can reason from an event once that event has been modeled with meaning, but do not by themselves solve the Human-origin + decision-semantics grounding problem.
+This is substantially closer to X1C than generic authentication.
 
-Status relative to X1C:
+## Why injective agreement matters
+
+A correspondence/agreement property can require that when one role reaches a completion/record event on data `M`, there exists a matching prior event/run by the peer on the same `M`.
+
+Injective agreement strengthens this by requiring a unique matching run, excluding replay-like reuse of one peer event for multiple completions.
+
+For X1C, let:
 
 ```text
-CLOSE FORMAL FAMILY / NOT DROP-IN EQUIVALENT
+M = (Content C, Scope S, Decision Instance I)
 ```
 
-## 2. Lowe agreement hierarchy — strongest close formal analogue found
+Then injective agreement is a strong structural prior-art analogue for:
 
-Lowe-style authentication distinguishes increasingly strong properties including aliveness, weak agreement, non-injective agreement and injective agreement.
+- exact referent binding;
+- unique decision instance;
+- correspondence between Human-side and System-side protocol events.
 
-A standard formulation of non-injective agreement says, informally: when one principal completes a run apparently with a peer and on data `M`, the peer must previously have been running the corresponding role and the principals agree on `M`.
+This significantly narrows any claim that Project 8 invented the need for `C,S,I` binding or instance uniqueness.
 
-Injective agreement strengthens this so that each completed run corresponds to a **unique** matching peer run. Formalizations may additionally require recentness.
+## Critical limitation
 
-Reference overview / formal trace formulation:
+Agreement machinery reasons over the semantics assigned to protocol events.
 
-- Crypto Engineering security-protocol notes summarizing Lowe hierarchy and Tamarin-style agreement claims: https://www-verimag.imag.fr/~ene/m2p/main.pdf
-
-### Mapping to X1C
-
-Injective agreement is unexpectedly close to three X1C requirements:
+If the model defines:
 
 ```text
-peer/role origin          ~ R1 origin
-agreement on data M       ~ R3 exact referent
-unique corresponding run  ~ decision instance / anti-replay
+H_ACCEPT(C,S,I)
 ```
 
-It also naturally supports causal ordering and recentness.
+then agreement can prove a unique matching relation involving that event.
 
-### Why it is not yet `HumanDecision(C,S,I)=TRUE`
+But agreement does not, by itself, prove that the real-world observable action represented by `H_ACCEPT` actually carries the Human decision semantics later attributed to it.
 
-The crucial difference is semantic grounding.
-
-Injective agreement proves a relation between **modeled protocol roles/runs and agreed data**. It does not independently establish that a Human protocol event means:
-
-```text
-I decide / accept this proposition
-```
-
-If the model labels some Human-side event as a `running`, `commit`, or consent event, the formalism can verify correspondence. But the semantic legitimacy of treating the observed Human interaction as a decision event is outside the agreement property itself.
-
-Therefore:
+Thus:
 
 ```text
 INJECTIVE AGREEMENT != HUMAN DECISION SEMANTICS
 ```
 
-but it is the strongest formal prior-art candidate found for the structural core of:
+## Security ceremonies
+
+Security-ceremony work is important because it explicitly extends analysis beyond machine-only protocol roles to Human interaction, channels, devices and user actions.
+
+This helps address the earlier R1 problem by making Human-side events first-class parts of the model rather than treating a device/account as equivalent to a Human.
+
+However, the composition test now shows the residual issue more sharply:
 
 ```text
-origin + referent + unique instance
+Human-side observable event
+!= automatically grounded Human decision meaning
 ```
 
-Status:
+A ceremony can model `press`, `confirm`, `read`, `select`, `touch`, or `accept` events. The semantic meaning of the event still has to be justified rather than imported by its label.
+
+## Formal FIDO2 / Human interaction
+
+Formal analyses that explicitly include Human interaction and consent semantics are particularly relevant because they combine:
+
+- Human-side ceremony events;
+- authenticator/server protocol roles;
+- origin/authentication properties;
+- consent/confirmation semantics;
+- agreement-style reasoning.
+
+This prior art means Project 8 should not claim novelty merely for combining a Human actor with authentication/agreement properties.
+
+The open question is narrower: how the formal model grounds the semantics of the Human-side consent/decision event relative to observable behavior.
+
+## BAN / authentication logics
+
+BAN-style logics and successors reason about beliefs, message origin/freshness and authentication conclusions.
+
+They are useful background for epistemic protocol reasoning, but they do not appear in this review to be a direct drop-in answer to:
 
 ```text
-VERY CLOSE STRUCTURAL PRIOR ART / PARTIAL ADOPTION CANDIDATE
+this observed Human action semantically constitutes this decision
 ```
 
-## 3. Strand spaces and authentication tests
+They can reason over assumptions/events/messages already represented in the model; the difficult step remains grounding the Human decision semantics of the event itself.
 
-Authentication tests infer that certain regular protocol nodes/events must exist when a trace contains cryptographically constrained challenge/response transformations.
+Status: `PARTIAL STRUCTURAL PRIOR ART`.
 
-Sources:
+## Non-repudiation / evidence logics
 
-- Guttman, `Authentication Tests`: https://web.cs.wpi.edu/~guttman/pubs/auth_tests.pdf
-- Thayer, Herzog, Guttman, Strand Spaces literature.
+Non-repudiation and evidential transaction models contribute durable evidence that a principal participated in, sent, received, signed or accepted some protocol-relevant object.
 
-### Relevance
-
-This is epistemically close to R1 because the proof shape is:
+This is strong prior art for provenance/evidential persistence, but does not automatically establish the semantic equivalence between an observable Human action and the proposition:
 
 ```text
-observed trace
-=> some corresponding regular event must have existed
+Human decided C,S,I
 ```
 
-That is substantially stronger than a self-asserted `approver="human"` field.
+Status: `STRONG PROVENANCE PRIOR ART / NOT FULL SEMANTIC GROUNDING`.
 
-### Residual mismatch
+## Observational equivalence
 
-The inference establishes the existence of a protocol participant/event under cryptographic assumptions. It does not establish that the event is a **Human decision** unless that semantics has already been validly grounded in the ceremony/protocol model.
+Observational equivalence / trace equivalence / indistinguishability are standard formal tools across protocol privacy, anonymity and related security properties.
 
-Status:
+Therefore Project 8 does **not** claim novelty in observational equivalence itself.
 
-```text
-STRONG EVENT-EXISTENCE ANALOGUE / NOT DECISION-AUTHORSHIP EQUIVALENT
-```
-
-## 4. Non-repudiation and evidence logics
-
-Non-repudiation work formalizes evidence that a principal originated, submitted, received, approved, or otherwise participated in a transaction. Standards and protocol proofs distinguish evidence of origin and receipt and often bind evidence to concrete message content and transaction labels.
-
-Relevant lines:
-
-- ISO/ITU non-repudiation service concepts, including evidence of approval/origin;
-- formal proofs of non-repudiation protocols such as Zhou-Gollmann;
-- accountability / evidence logics.
-
-Example standard reference:
-
-- ITU-T X.842 / ISO non-repudiation framework.
-
-### Relevance
-
-This is close to R1 + R3 because it explicitly asks what evidence is valid for attributing an action/content to a principal.
-
-### Residual mismatch
-
-Cryptographic evidence of origin generally establishes that a key/principal generated or authorized a protocol artifact under the security model. It does not automatically establish private Human intent or semantic decision authorship.
-
-This supports an important X1C distinction:
+The potentially distinctive use under X1C is narrower:
 
 ```text
-EVIDENCE OF ORIGIN != EVIDENCE OF HUMAN DECISION SEMANTICS
-```
-
-Status:
-
-```text
-STRONG PRIOR ART FOR ATTRIBUTION EVIDENCE / NOT FULL X1C RULE
-```
-
-## 5. Cyberlogic / evidential transactions
-
-`Evidential Transactions with Cyberlogic` provides an attestation/knowledge logic for distributed transactions, authorization, delegation, revocation and verifiable evidence assembled by distributed proof search.
-
-Source:
-
-- Ruess & Shankar, `Evidential Transactions with Cyberlogic`: https://arxiv.org/abs/2304.00060
-
-### Relevance
-
-Cyberlogic is a strong candidate substrate for expressing a future X1C-style evidence predicate. It already treats authorization and evidence as logical objects rather than informal audit fields.
-
-### Residual mismatch
-
-The reviewed formulation still treats attestations/signatures and authorization facts as externally grounded evidence primitives. It does not supply a standard Human-decision-authorship predicate or solve when a Human-computer event is semantically a decision.
-
-Status:
-
-```text
-POSSIBLE FORMAL SUBSTRATE / NO DIRECT EQUIVALENT FOUND
-```
-
-## 6. Observational equivalence in security protocols
-
-Observational equivalence is mature prior art in cryptographic and protocol security. Two systems/runs can be considered equivalent when an observer/adversary cannot distinguish them from available observations. This is widely used for privacy, anonymity, secrecy and process equivalence.
-
-Examples include applied pi-calculus style equivalence and epistemic formulations of protocol indistinguishability.
-
-### Critical finding
-
-Therefore **X1C did not invent observational equivalence**.
-
-The potentially distinctive step is its use as a **sufficiency falsifier for decision attribution**:
-
-```text
-if observations O are compatible with
 H1: HumanDecision(C,S,I) occurred
-and
-H0: HumanDecision(C,S,I) did not occur,
-then O does not justify HumanDecision(C,S,I)=TRUE.
+H0: HumanDecision(C,S,I) did not occur
+
+if Trace(H1) = Trace(H0)
+then the trace is insufficient evidence for HumanDecision(C,S,I)=TRUE
 ```
 
-This is essentially an epistemic indistinguishability argument applied to Human decision provenance.
+A standard named **decision-authorship** equivalent of this exact criterion was `NOT FOUND IN THIS PASS`.
 
-### Search result
+That is not a non-existence claim.
 
-Within this pass, no standard named criterion was found that combines:
+## Composition test result
 
-1. Human-origin event attribution;
-2. explicit decision semantics;
-3. exact referent/instance binding;
-4. an indistinguishable-history falsifier for the decision predicate itself.
-
-Status:
+The no-new-primitives composition test is recorded in:
 
 ```text
-OBSERVATIONAL EQUIVALENCE = ESTABLISHED PRIOR ART
-APPLICATION AS HUMAN-DECISION EVIDENCE SUFFICIENCY TEST = NOT FOUND IN THIS PASS
+research/X1C_COMPOSITION_TEST.md
 ```
 
-This is **not a novelty claim**.
+It combines:
 
-## 7. Security ceremonies — key bridge between protocol logic and Human action
+- security ceremony;
+- injective agreement/correspondence;
+- referent binding;
+- provenance/non-repudiation;
+- observational-equivalence attack.
 
-Security-ceremony research extends protocol models to include Human actors and communication surfaces that ordinary protocol models treat as out-of-band. Formal ceremony work also models Human deviations/mutations and analyzes whether expected authentication/security claims still hold.
-
-Relevant lines:
-
-- Bella et al., layered/security-ceremony analysis;
-- formal analysis of Human-protocol interaction;
-- recent mutation-based human-centric ceremony verification.
-
-### Relevance
-
-This line attacks exactly the hidden assumption that a technically valid protocol event automatically corresponds to the intended Human interaction.
-
-It is therefore highly relevant to X1C R1/R2.
-
-### Residual gap
-
-Ceremony analysis provides machinery to model Humans explicitly, but the reviewed work does not establish a universal criterion for when an observed Human interaction has **decision semantics** for arbitrary AI-assisted content/scope/instance.
-
-Status:
+Result:
 
 ```text
-CRITICAL ADJACENT FIELD / NO UNIVERSAL DECISION-AUTHORSHIP RULE FOUND
+BLOCKED — SEMANTICS CANNOT BE GROUNDED FROM THE TESTED TRACE MODEL
 ```
 
-## 8. Formal FIDO2 with Human interaction — closest domain-specific consent formalization
+The structural composition successfully handles much of origin/channel control, exact `(C,S,I)` agreement, uniqueness, anti-replay, binding and provenance.
 
-A particularly important prior-art result is formal analysis of FIDO2 that explicitly models the Human and discusses user consent using agreement-style properties.
-
-Source:
-
-- Schrempp, `Formal Verification of FIDO2 with Human Interaction` (2023): https://www.research-collection.ethz.ch/bitstreams/952083ec-7dea-4f73-85cf-83224610b096/download
-
-The work is reported to model user consent via an injective-agreement relation among relevant protocol actors while explicitly including Human interaction.
-
-### Why this matters
-
-This substantially narrows the X1C gap claim.
-
-It shows that the literature has already combined:
+The attack survives at the transition:
 
 ```text
-Human interaction
-+ consent semantics
-+ formal agreement / unique run correspondence
+observable Human-origin event
+=> Human decision semantics
 ```
 
-in at least a domain-specific authentication setting.
+H1 and H0 can retain the same system-visible Human-side action and the same structural agreement/binding/provenance properties while differing in the semantic proposition being attributed to the Human.
 
-Therefore Project 8 must **not** claim that formal Human consent + unique protocol instance binding is unexplored.
+Therefore the broad `PLAUSIBLE FORMALIZATION GAP` can now be narrowed.
 
-### Remaining question
-
-What remains potentially distinct is whether there is a **domain-independent epistemic rule** for arbitrary AI-assisted decisions that refuses `HumanDecision(C,S,I)=TRUE` whenever the evidence admits an observationally indistinguishable no-decision history.
-
-Status:
+## Current gap statement
 
 ```text
-MAJOR PRIOR ART / X1C GAP NARROWED
-```
-
-## Deep-pass synthesis
-
-The deep pass changes the state-of-the-art map.
-
-### What is clearly prior art
-
-```text
-belief/knowledge reasoning about protocol evidence
-agreement on exact data
-injective uniqueness / anti-replay correspondence
-proof that corresponding protocol events must exist
-non-repudiation / evidence of origin
-formal authorization/evidential transactions
-observational equivalence / indistinguishable runs
-formal inclusion of Humans in security ceremonies
-formal consent properties in at least FIDO2-style Human interaction
-```
-
-### What was NOT found as a standard drop-in rule in this pass
-
-A domain-independent rule equivalent to:
-
-```text
-HumanDecision(C,S,I)=TRUE
-```
-
-where truth is justified only when the available observations rule out an observationally equivalent history in which that Human decision did not occur, while keeping distinct:
-
-```text
-origin
-semantics
-referent/instance
-continuity/supersession
-```
-
-## Revised gap status
-
-The original label remains correct, but the candidate gap is now much narrower:
-
-```text
-PLAUSIBLE FORMALIZATION GAP / NOT YET NOVELTY
+PLAUSIBLE SEMANTIC-GROUNDING / FORMALIZATION GAP
+NOT YET NOVELTY
 ```
 
 More precisely:
 
-> The potential gap is not authentication, agreement, non-repudiation, observational equivalence, consent confirmation, or Human-in-protocol modeling individually. The potential gap is a domain-independent epistemic composition rule for Human decision attribution in AI-assisted systems, with explicit negative sufficiency testing by indistinguishable no-decision histories.
+> Existing formal security machinery appears capable of representing Human-side roles/channels, exact referent agreement, unique matching instances, replay resistance, binding and provenance. The tested composition remains unable to justify `HumanDecision(C,S,I)` from the trace unless the decision semantics of the Human-side event are independently grounded rather than assumed by event naming or ceremony specification.
 
-## ATTACK THE FRAME
+## Strongest attack on the gap hypothesis
 
-A serious alternative explanation must remain live:
+The live alternative is:
 
-> X1C may ultimately be expressible as an ordinary composition of existing ceremony modeling + injective agreement + transaction/content binding + non-repudiation evidence, with no genuinely new formal primitive required.
+> existing security-ceremony, formal HCI consent, epistemic/action or agency logics may already provide a principled way to ground the Human-side event semantics.
 
-If that composition is sufficient, Project 8 should **adopt that composition** rather than coin a new logic.
+If so, Project 8 should adopt that model and rerun the composition test.
 
-This is currently the strongest threat to a novelty claim and should be treated as a positive research outcome, not a failure.
+The current artifacts do not justify a new logic.
 
-## Decision consequence
+## Next bounded literature pass
 
-```text
-DO NOT BUILD X1D.
-DO NOT BUILD V1.
-DO NOT DESIGN NEW AUTHENTICATION / SIGNATURE / BROKER MECHANISMS.
-DO NOT CLAIM NOVELTY.
-```
-
-Next research question:
-
-> Can `HumanDecision(C,S,I)` be represented faithfully using existing security-ceremony + injective-agreement / correspondence properties, with observational equivalence used only as the counterexample method?
-
-If YES:
+Search only for formal treatments of:
 
 ```text
-ADOPT EXISTING FORMALISM
+observable Human action
+-> consent / decision / intention semantics
 ```
 
-If NO, and the failure is precisely identified:
+especially in:
 
-```text
-FORMALIZATION GAP STRENGTHENED
-```
+- security ceremony semantics beyond event labels;
+- formal HCI consent;
+- epistemic logic of agency;
+- action/intention logics;
+- authorization-with-intent;
+- formal human-protocol interaction;
+- usable-security models that distinguish gesture from informed/meaningful consent.
 
-Only after that comparison should X1D be reconsidered.
+Do not build X1D, V1 or new mechanisms before this pass.
