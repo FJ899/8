@@ -1,288 +1,248 @@
 # X1C — Composition Test
 
 Date: 2026-08-30
-Status: RESEARCH ARTIFACT / NO NEW PRIMITIVES / NO IMPLEMENTATION / NO X1D
+Status: RESEARCH ARTIFACT / NO NEW PRIMITIVES / NO IMPLEMENTATION / NO X1D / NO NOVELTY CLAIM
 
-## Question
+## Updated question
 
-Can the X1C predicate
+Can a public Human-decision attribution be justified using only existing formal machinery, without introducing a new decision-semantic primitive?
 
-```text
-HumanDecision(C,S,I) = TRUE
-```
-
-be represented sufficiently using only existing formal machinery, without introducing a new logic or a new decision primitive?
-
-## Allowed composition
-
-This test intentionally permits only existing classes of machinery:
-
-1. **Security ceremony** — roles, Human/AI/System interaction, observable events and channels.
-2. **Injective agreement / correspondence** — agreement on exact data and a unique matching run/instance.
-3. **Referent binding** — exact binding of the accepted content/scope to the later attributed decision/effect.
-4. **Non-repudiation / provenance** — durable evidence about the attributed actor/event.
-5. **Observational-equivalence attack** — search for two histories with the same system-visible trace but different truth of `HumanDecision(C,S,I)`.
-
-No new primitive such as `verified_intent`, `true_consent`, `human_mind_state`, or a bespoke Agency-Kernel decision token may be added.
-
-## R1–R4 mapping
-
-| X1C lower bound | Existing formal machinery used | What it can establish |
-|---|---|---|
-| R1 — Human-origin | security ceremony + trusted/Human-controlled interaction assumption + provenance | an event is attributable to the Human-side role/channel rather than merely to the effect executor |
-| R2 — explicit decision semantics | ceremony event label / consent or transaction-confirmation event | the protocol treats an observed event as an acceptance/decision event |
-| R3 — exact referent | injective agreement/correspondence on `(C,S,I)` + referent binding | the Human-side event and System-side attribution refer to the same exact content, scope and unique instance |
-| R4 — continuity/supersession | binding + uniqueness/freshness + provenance | later A-prime cannot silently inherit the evidence for A; replacement requires a new matching event or explicit supersession |
-
-## Proposed composition without new primitives
-
-Define an existing-ceremony Human-side event:
+Target predicate:
 
 ```text
-H_ACCEPT(C,S,I)
+HumanDecisionAttributionJustified_K(C,S,I)=TRUE
 ```
 
-and a System-side attribution event:
+where `K` is the relevant domain/context.
+
+This predicate does **not** claim direct access to private Human mental state. It claims only that the system has sufficient public, observable and normatively justified grounds to attribute a bounded act to the Human as a decision concerning exact content C, scope S and decision instance I.
+
+## Refined composition
 
 ```text
-S_RECORD_HUMAN_DECISION(C,S,I)
+Security Ceremony
++ independently justified Counts-As / Constitutive Rule Q_K
++ Injective Agreement / Correspondence
++ Exact Referent / Execution Binding
++ Provenance / Non-Repudiation
++ Observational-Equivalence Counterhistory Attack
 ```
 
-Require:
+## Core correction
 
-```text
-P1 Human-origin ceremony condition:
-   H_ACCEPT(C,S,I) occurs on the Human-side interaction path / role.
-
-P2 Injective agreement / correspondence:
-   every S_RECORD_HUMAN_DECISION(C,S,I)
-   has one unique prior matching H_ACCEPT(C,S,I).
-
-P3 Referent integrity:
-   the exact C,S,I used by H_ACCEPT are the exact C,S,I later recorded and acted upon.
-
-P4 No silent inheritance:
-   mutation of C or S, or a new decision instance I-prime,
-   requires a new matching Human-side event or explicit supersession.
-
-P5 Evidential persistence:
-   provenance/non-repudiation evidence preserves the matching relation.
-```
-
-If these properties were sufficient, the System could infer:
-
-```text
-P1 && P2 && P3 && P4 && P5
-=> HumanDecision(C,S,I) = TRUE
-```
-
-The test below attacks that implication.
-
-# Attack the composition
-
-## H1 — genuine Human decision
-
-1. System presents exact `C,S,I`.
-2. Human understands the decision proposition and decides to accept it.
-3. Human performs the observable ceremony action that emits `H_ACCEPT(C,S,I)`.
-4. System records `S_RECORD_HUMAN_DECISION(C,S,I)`.
-5. Injective agreement/correspondence holds on exact `(C,S,I)`.
-6. Provenance records the Human-side event.
-7. No mutation or replay occurs.
-
-Ground truth for the hypothesis being tested:
-
-```text
-HumanDecision(C,S,I) = TRUE
-```
-
-All P1–P5 hold.
-
-## H0-A — same Human-origin act, no decision semantics
-
-1. System presents exact `C,S,I`.
-2. Human does **not** form/perform the decision represented by `HumanDecision(C,S,I)`.
-3. Human nevertheless performs the same observable action — for example because the control is understood as `continue`, acknowledgement, navigation, dismissal, routine confirmation, or because the Human acts without the decision semantics the model attributes to the event.
-4. The same ceremony event `H_ACCEPT(C,S,I)` is emitted.
-5. System records the same `S_RECORD_HUMAN_DECISION(C,S,I)`.
-6. Injective agreement/correspondence holds on exact `(C,S,I)`.
-7. Provenance records the same Human-side origin.
-8. No mutation or replay occurs.
-
-Ground truth for the hypothesis being tested:
-
-```text
-HumanDecision(C,S,I) = FALSE
-```
-
-Yet P1–P5 still hold.
-
-The System-visible security trace can be the same as H1.
-
-### Result
-
-This defeats the implication **unless the semantics of `H_ACCEPT` are grounded independently of the event label**.
-
-Merely naming the event `HumanAccept` or treating a button/gesture as an acceptance event imports the desired conclusion into the model.
+The previous composition failed because it modeled decision semantics by labeling an observable event `H_ACCEPT`.
 
 ```text
 EVENT LABEL != DECISION SEMANTICS
 ```
 
-## H0-B — Human-origin confirmation under misframed referent meaning
-
-This is a stronger semantic variant.
-
-1. Exact machine-level `C,S,I` is bound and displayed through the ceremony.
-2. Human performs the genuine Human-origin confirmation gesture.
-3. The protocol correctly proves injective agreement on exact bits/fields `(C,S,I)`.
-4. The Human, however, reasonably interprets the presented proposition differently from the semantic decision later attributed by the System.
-5. The same provenance, correspondence, uniqueness and referent-binding properties hold.
-
-If X1C's claim is about semantic authorship of the System-attributed decision rather than merely cryptographic agreement on displayed fields, the protocol trace again does not by itself establish equivalence between:
+A subsequent literature pass identified strong prior art in contextual constitutive rules:
 
 ```text
-Human-facing meaning
+X counts as Y in context K
 ```
 
-and
+This provides an existing formal bridge from low-level observable action X to public/institutional action Y, provided the constitutive rule is independently justified in the relevant context.
+
+Therefore the refined model is:
 
 ```text
-System-attributed decision meaning
+Observable Human Act A
++ Domain/Context K
++ independently justified validity conditions Q_K
+=> A counts-as ValidHumanDecisionAct_K(C,S,I)
 ```
 
-This is not a failure of injective agreement. It is outside what agreement is designed to prove.
-
-## H0-C — automated origin attempt
-
-If the Human-side ceremony event can also be generated by software/process possession of the same interaction capability, then H0-C breaks P1 directly:
+Then:
 
 ```text
-non-Human process emits the event
+ValidHumanDecisionAct_K(C,S,I)
++ injective agreement on (C,S,I)
++ preserved referent/execution binding
++ provenance/non-repudiation
+=> HumanDecisionAttributionJustified_K(C,S,I)=TRUE
 ```
 
-This is the original R1 problem.
-
-A trusted/Human-controlled path or ceremony assumption can rule out H0-C. Therefore H0-C is **not** the decisive composition falsifier once P1 is genuinely satisfied.
-
-The decisive residual issue is H0-A/H0-B: even a genuine Human-origin event can remain semantically underdetermined.
-
-# What existing formalisms successfully solve
-
-The composition is already strong enough to solve most of the structural problem:
+## What the existing machinery covers
 
 ```text
-WHO/ORIGIN CHANNEL   -> ceremony/provenance
-EXACT C,S            -> agreement + binding
-UNIQUE I             -> injective agreement/freshness
-NO A -> A-prime LEAK -> binding/supersession
-DURABLE EVIDENCE     -> provenance/non-repudiation
+PUBLIC DECISION SEMANTICS -> contextual counts-as / constitutive rule
+WHO/ORIGIN CHANNEL        -> ceremony/provenance
+EXACT C,S                 -> agreement + binding
+UNIQUE I                  -> injective agreement/freshness
+NO A -> A-prime LEAK      -> binding/supersession
+DURABLE EVIDENCE          -> provenance/non-repudiation
 ```
 
-Therefore Project 8 should not claim novelty in those properties.
+No new foundational primitive has been shown necessary for these properties.
 
-# Exact residual gap
+## Attack the constitutive rule, not the event label
 
-The composition breaks at the inference:
+### H0-1 — arbitrary rule declaration
+
+Designer declares:
 
 ```text
-observable Human-origin event with protocol-defined acceptance semantics
-=> Human decision semantics
+pressing Continue counts-as Decision(A)
 ```
 
-Existing agreement/correspondence machinery can prove that the correct Human-side event occurred and that the System-side run uniquely corresponds to it on exact `(C,S,I)`.
+but supplies no independent normative/domain justification.
 
-It does **not**, by itself, establish that the ceremony event's protocol label truthfully captures the Human decision semantics whose authorship is later asserted.
+Later agreement, provenance and binding may all be perfect.
 
-The gap can be stated narrowly as:
-
-> How can a formal model ground the semantics of an observable Human-origin event strongly enough that `HumanDecision(C,S,I)` is not merely true by event naming/ceremony specification, while remaining based on observable evidence rather than inaccessible private mental state?
-
-This is narrower than `secure approval`, narrower than R1 alone, and narrower than a general Human-intent problem.
-
-# Observational-equivalence result
-
-For H1 and H0-A, under an event model where both produce the same externally observable Human-side action:
+Result:
 
 ```text
-Trace(H1) = Trace(H0-A)
+CONSTITUTIVE DECLARATION != JUSTIFIED CONSTITUTIVE RULE
 ```
 
-while:
+Formal correctness after the declaration would be circular.
+
+### H0-2 — incomplete/misrepresented presentation
+
+Human performs a genuine affirmative act, but operative content/scope differs materially from what the Human-facing ceremony presents.
+
+Result:
 
 ```text
-HumanDecision_H1(C,S,I) = TRUE
-HumanDecision_H0-A(C,S,I) = FALSE
+Q_K must constrain presentation/referent validity;
+security agreement alone is insufficient.
 ```
 
-Therefore the current composition cannot justify the semantic predicate from the trace alone.
+### H0-3 — exact referent but generic interaction
 
-This does **not** prove that no existing formalism can solve the problem. It proves only that the tested composition, when decision semantics are represented by a ceremony event label plus existing agreement/binding/provenance properties, is insufficient unless semantic grounding is supplied by an additional justified assumption/model.
+Exact C,S,I are available, but the observable Human act publicly functions only as navigation/acknowledgement/continue.
 
-# Verdict
+Result:
+
+```text
+Q_K must contain an independently justified affirmative-decision condition.
+```
+
+### H0-4 — domain-invalid context
+
+A clear affirmative act exists for exact C,S,I, but a domain-specific validity condition is absent: e.g. lack of required voluntariness, mandatory disclosure, authority or other constitutive condition.
+
+Origin, agreement, binding and provenance may all still hold.
+
+Result:
+
+```text
+ATTRIBUTION VALIDITY IS DOMAIN-NORMATIVE.
+```
+
+### H0-5 — universal-Q transfer failure
+
+A Q-set derived from one domain is applied unchanged across payments, medical consent, privacy consent, Git approval, creative canon acceptance or employment decisions.
+
+Counterexample: conditions constitutive of valid consent/decision differ by domain.
+
+Result:
+
+```text
+ONE UNIVERSAL COMPLETE Q-SET NOT ESTABLISHED.
+```
+
+## Revised H1/H0 observational-equivalence test
+
+### H1
+
+The authoritative domain rule Q_K is independently justified; all required observable conditions hold; Human performs the constitutively valid act; unique agreement, binding and provenance all hold.
+
+### H0-A — private mental difference only
+
+The same publicly valid act occurs under the same valid context and exact C,S,I, but the Human internally feels uncertainty, regret or some different private attitude.
+
+The trace is identical.
+
+This no longer falsifies:
+
+```text
+HumanDecisionAttributionJustified_K
+```
+
+because that predicate deliberately claims a justified public/normative attribution, not private psychological truth.
+
+### H0-B — required validity condition outside observation coverage
+
+A condition that Q_K treats as necessary is absent or violated, but the attribution system cannot observe it.
+
+Then H1 and H0 can produce the same visible trace while attribution validity differs.
+
+Result:
+
+```text
+INSUFFICIENT OBSERVATION COVERAGE
+```
+
+### H0-C — Q_K itself arbitrary or silently changed
+
+If the system/AI can invent, reinterpret or silently supersede Q_K, then formal proof under that rule does not establish legitimate attribution.
+
+Result:
+
+```text
+RULE PROVENANCE / AUTHORITY / VERSIONING BECOMES PART OF THE PROBLEM.
+```
+
+## Verdict
+
+The earlier verdict:
 
 ```text
 BLOCKED — SEMANTICS CANNOT BE GROUNDED FROM THE TESTED TRACE MODEL
 ```
 
-Not:
+is superseded as the strongest current conclusion.
+
+Semantic grounding has strong prior art through contextual constitutive rules.
+
+The strongest supported verdict is now:
 
 ```text
-COMPOSITION INSUFFICIENT — NEW LOGIC REQUIRED
+COMPOSITION CONDITIONALLY SUFFICIENT
+— RELATIVE TO AN INDEPENDENTLY JUSTIFIED DOMAIN RULE Q_K
+— AND COMPLETE OBSERVATION OF THE CONDITIONS Q_K REQUIRES
 ```
 
-because the review has not established that existing security-ceremony, HCI consent, epistemic or action-theoretic formalisms cannot supply the missing grounding.
-
-Not:
+Also:
 
 ```text
-COMPOSITION SUFFICIENT
+NO NEW DECISION-SEMANTICS PRIMITIVE DEMONSTRATED AS NECESSARY.
+NO UNIVERSAL COMPLETE Q-SET ESTABLISHED.
 ```
 
-because H1 and H0-A remain observationally equivalent under P1–P5.
+## Current gap candidate
 
-# Consequence for the Project 8 hypothesis
+The candidate gap is no longer Human decision semantics itself.
 
-The plausible gap is now narrower:
+It is now closer to:
+
+> How should an AI-assisted system identify, source, govern, version and evidence the authoritative domain-specific constitutive rule Q_K under which an observable Human act counts as a valid public decision act, without allowing the AI/system to invent or silently change that rule?
+
+This is **not** a novelty claim.
+
+Existing normative systems, policy logics, institutional-rule frameworks, legal-computational models or governance systems may already solve substantial parts of it.
+
+## Revised status
 
 ```text
-NOT: missing authentication
-NOT: missing trusted path
-NOT: missing exact binding
-NOT: missing unique agreement
-NOT: missing provenance
-
-POSSIBLE GAP:
-formal grounding of Human decision semantics at the Human-side ceremony event,
-such that semantic authorship is not obtained merely by naming an observable event `accept`.
+SEMANTIC-GROUNDING: STRONG PRIOR ART / COMPOSITION AVAILABLE
+UNIVERSAL Q-SET: NOT ESTABLISHED
+DOMAIN-INDEPENDENT SCHEMA: STRONGLY SUPPORTED
+POTENTIAL GAP: AUTHORITATIVE DOMAIN-RULE GOVERNANCE + EVIDENCE COMPOSITION
+NOVELTY: NOT ESTABLISHED
 ```
 
-Status:
+## Stop discipline
 
-```text
-PLAUSIBLE SEMANTIC-GROUNDING / FORMALIZATION GAP
-NOT YET NOVELTY
-```
+- No X1D created.
+- No code changed.
+- No Agency Kernel v1 designed.
+- No new security primitive introduced.
+- No authentication/MFA/token/signature/broker mechanism selected.
+- No scientific novelty claim made.
 
-# Stop discipline
+Full constitutive-rule attack is recorded in:
 
-- No X1D was created.
-- No code was changed.
-- No Agency Kernel v1 was designed.
-- No new security primitive was introduced.
-- No authentication, MFA, token, signature, broker or trusted-hardware mechanism was selected.
-- No scientific novelty claim is made.
-
-# Next research question
-
-Before any new experiment or architecture work, search specifically for existing formal treatments of:
-
-```text
-observable action -> intentional/consent semantics
-```
-
-in security ceremonies, usable-security ceremony analysis, formal HCI consent, action/intent logics, epistemic logic of agency, authorization-with-intent, and human-protocol interaction.
-
-If an existing model grounds the Human-side event sufficiently, adopt it and rerun this composition test.
-
-If no such model is found after a bounded systematic pass, the gap claim can be strengthened from a broad X1C formalization gap to a specific **Human decision-event semantic grounding gap**.
+`research/X1C_CONSTITUTIVE_RULE_COMPOSITION_TEST.md`.
