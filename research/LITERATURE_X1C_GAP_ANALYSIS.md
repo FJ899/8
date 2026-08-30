@@ -29,7 +29,13 @@ Reviewed lines:
 - FIDO transaction confirmation / WYSIWYS;
 - PSD2 / RTS dynamic linking;
 - Meaningful Human Control (tracking / tracing and operationalization);
-- 2026 Consent Integrity for black-box LLM agents.
+- 2026 Consent Integrity for black-box LLM agents;
+- security protocol epistemics / authentication logics;
+- Lowe-style agreement and injective agreement;
+- strand spaces / authentication tests;
+- non-repudiation and evidential transaction logics;
+- security ceremonies and formal Human-protocol interaction;
+- formal FIDO2 with Human interaction.
 
 Question for every R-property:
 
@@ -41,10 +47,53 @@ Question for every R-property:
 
 | X1C property | Closest existing line | Strongly covered | Residual gap relevant to X1C |
 |---|---|---|---|
-| R1 — Human-origin evidence | Trusted Path; WebAuthn UP/UV | protected channel; presence; verification of an authenticator user | whether the observed event itself justifies attribution of Human decision authorship |
-| R2 — explicit decision semantics | FIDO Transaction Confirmation / WYSIWYS; consent workflows | explicit confirmation of a transaction / human-readable content | generic interaction or identity evidence still does not by itself establish decision semantics for arbitrary AI-assisted decisions |
-| R3 — exact referent binding | WYSIWYS; PSD2 dynamic linking; Consent Integrity | binds approval/authentication to concrete transaction/action content or parameters | generalization to arbitrary `content + scope + decision instance` remains a modeling step, not directly supplied by payment standards |
-| R4 — continuity / supersession | PSD2 invalidation on changed parameters; bind-to-execution | changed amount/payee invalidates prior code; approved action can be bound to executed action | a general provenance/supersession rule for arbitrary decisions is not supplied as a universal model |
+| R1 — Human-origin evidence | Trusted Path; WebAuthn UP/UV; security ceremonies | protected channel; presence; verification; Human-side protocol role | whether the observed Human-side event itself justifies semantic attribution of decision authorship |
+| R2 — explicit decision semantics | FIDO Transaction Confirmation / WYSIWYS; consent workflows | explicit confirmation of a transaction / human-readable content | whether protocol event semantics truthfully ground `Human decided`, rather than merely naming an observable event `accept` |
+| R3 — exact referent binding | WYSIWYS; PSD2 dynamic linking; injective agreement/correspondence; Consent Integrity | exact data/referent agreement, unique matching run, concrete transaction/action binding | generalization to arbitrary `content + scope + decision instance` is a modeling step but structurally well precedented |
+| R4 — continuity / supersession | bind-to-execution; dynamic linking; injective uniqueness/freshness; provenance | changed action cannot silently inherit old authorization; replay/duplicate runs can be excluded | general semantic supersession remains domain-dependent, but structural continuity is well precedented |
+
+## Key update after deep pass + composition test
+
+The strongest structural prior-art analogue found is **injective agreement / correspondence**, especially when embedded in a **security ceremony** that explicitly models Human interaction.
+
+That combination already supports much of:
+
+```text
+origin/peer + exact data + unique instance + matching run
+```
+
+Therefore the plausible gap is narrower than originally stated.
+
+A no-new-primitives composition test was performed in:
+
+```text
+research/X1C_COMPOSITION_TEST.md
+```
+
+using only:
+
+- security ceremony;
+- injective agreement/correspondence;
+- referent binding;
+- non-repudiation/provenance;
+- observational-equivalence attack.
+
+The composition successfully covers most structural aspects of R1/R3/R4, but remains blocked at the semantic inference:
+
+```text
+observable Human-origin event with protocol-defined acceptance semantics
+=> Human decision semantics
+```
+
+The test found H1/H0 histories with the same system-visible Human-side action and the same agreement/binding/provenance structure, while differing in whether the Human actually performed the decision semantics later attributed by the System.
+
+This yields the current bounded verdict:
+
+```text
+BLOCKED — SEMANTICS CANNOT BE GROUNDED FROM THE TESTED TRACE MODEL
+```
+
+This does **not** establish that a new logic is required. It establishes only that event naming + existing structural agreement/binding/provenance properties are insufficient unless the Human-side decision semantics are independently grounded.
 
 ## R1 — Human-origin evidence
 
@@ -90,9 +139,9 @@ USER PRESENT != USER VERIFIED != HUMAN DECISION ABOUT THIS CONTENT
 
 ### X1C status
 
-R1 is **partially covered** by existing primitives, but the step from trustworthy/user-origin interaction evidence to *decision authorship of a specific decision event* is not supplied as a general rule by these sources.
+R1 is **partially covered** by existing primitives. Security ceremonies and trusted paths can strengthen Human-side origin assumptions, but origin alone still does not supply decision semantics.
 
-Observational-equivalence analogue: `NOT FOUND IN THIS REVIEW`.
+Observational-equivalence analogue for decision authorship: `NOT FOUND IN THIS REVIEW`.
 
 ## R2 — Explicit decision semantics
 
@@ -117,13 +166,25 @@ This strongly supports X1C R2 as a known requirement class.
 
 ### What this does not establish
 
-It does not imply that every explicit-looking interaction in an AI workflow has decision semantics. A `continue`, navigation event, acknowledgement, or generic authenticated action still requires separate interpretation.
+The composition test shows a subtler residual issue:
+
+```text
+EVENT LABEL = "accept"
+```
+
+is not itself proof that the observable event truthfully grounds the semantic proposition:
+
+```text
+Human decided C,S,I
+```
+
+A Human may perform the same observable action while interpreting it as continue/acknowledge/dismiss/routine confirmation, or while understanding the proposition differently from the System-attributed decision meaning.
+
+Existing transaction-confirmation work may solve this adequately inside bounded transaction semantics. The current review has not yet shown a domain-independent formal rule for arbitrary AI-assisted decisions.
 
 ### X1C status
 
-R2 is **well precedented**. Project 8 should not treat explicit decision semantics as a newly discovered property.
-
-Observational-equivalence analogue: `NOT FOUND IN THIS REVIEW` as a general falsification rule for arbitrary decision semantics.
+R2 is **well precedented as an interaction requirement**, but the formal semantic-grounding step remains the main unresolved part of the tested composition.
 
 ## R3 — Exact referent binding
 
@@ -131,72 +192,27 @@ Observational-equivalence analogue: `NOT FOUND IN THIS REVIEW` as a general fals
 
 **PSD2 dynamic linking** requires, for remote electronic payments, strong customer authentication linked to a specific amount and payee. EBA guidance states that the authentication code is specific to the amount and payee agreed to by the payer, and that accepted authentication must correspond to those original parameters.
 
-Sources:
-
-- https://www.eba.europa.eu/single-rule-book-qa/qna/view/publicId/2020_5133
-- https://www.eba.europa.eu/single-rule-book-qa/qna/view/publicId/2019_4556
-
 FIDO WYSIWYS / Transaction Confirmation likewise binds displayed transaction text to the authentication result.
 
-Source: https://fidoalliance.org/wp-content/uploads/2019/01/How_FIDO_Meets_the_RTS_Requirements_December2018.pdf
-
-### What this establishes
-
-The core idea behind R3 is already technically mature in transaction security:
-
-```text
-generic YES != YES to these exact parameters
-```
-
-Concrete parameters are included in or cryptographically bound to the authorization/confirmation process.
-
-### What this does not establish
-
-Payment standards define domain-specific referents such as amount and payee. X1C generalizes the referent to:
-
-```text
-Content C + Scope S + Decision Instance I
-```
-
-That generalization is plausible but is not itself directly specified by PSD2.
+Injective agreement/correspondence adds a formal structural analogue: one unique matching run agrees on exact data values.
 
 ### X1C status
 
-R3 is **strongly precedented**. The likely contribution, if any, is not the existence of binding but a domain-independent decision-evidence model for AI-assisted work.
-
-Observational-equivalence analogue: `NOT FOUND IN THIS REVIEW`.
+R3 is **strongly precedented**. Project 8 should not claim novelty in exact referent binding or unique matching instances.
 
 ## R4 — Integrity / supersession visibility
 
-### Existing concepts
-
-PSD2 dynamic linking requires that any change to relevant transaction parameters such as amount or payee invalidates the generated authentication code.
-
-Source: https://www.eba.europa.eu/single-rule-book-qa/qna/view/publicId/2019_4556
-
-The 2026 Consent Integrity paper requires the action shown to the Human to be bound to the exact action that executes, rather than trusting an agent-authored narrative.
-
-Source: https://arxiv.org/abs/2606.02668
-
-### What this establishes
-
-There is strong prior art for the principle:
+Dynamic linking, bind-to-execution, injective uniqueness/freshness and provenance already provide strong structural prior art for:
 
 ```text
 approval of A does not automatically authorize changed A-prime
 ```
 
-and for binding approval to execution.
-
-### What this does not establish
-
-The cited work does not appear to supply a universal decision-history model covering arbitrary semantic supersession, stale consent, scope expansion, replacement and provenance beyond the concrete action/transaction binding problem.
+and for replay/duplicate-instance resistance.
 
 ### X1C status
 
-R4 is **strongly precedented at the transaction/action level**. A generic supersession/provenance rule remains a modeling question.
-
-Observational-equivalence analogue: `NOT FOUND IN THIS REVIEW`.
+R4 is **strongly precedented structurally**. General semantic supersession remains domain-dependent, but this is no longer the strongest candidate gap.
 
 ## Meaningful Human Control
 
@@ -204,18 +220,7 @@ Meaningful Human Control (MHC) introduces the `tracking` and `tracing` condition
 
 Tracking asks whether a human-AI system responds to relevant Human reasons. Tracing asks whether system behavior/capabilities/effects are traceable to a relevant Human agent with appropriate moral and technical understanding.
 
-Sources:
-
-- https://link.springer.com/article/10.1007/s43681-022-00167-3
-- https://link.springer.com/article/10.1007/s10676-019-09519-w
-
-### Relevance to X1C
-
-MHC is conceptually close because it resists shallow `human in the loop` claims and requires meaningful relations between Human reasons/responsibility and system behavior.
-
-However, the cited operationalization work itself notes that translating tracking/tracing into general system-level design properties is non-trivial and remains incomplete across contexts.
-
-MHC therefore supports the importance of provenance/control relations but is not, in this review, a drop-in technical criterion for:
+MHC remains conceptually important, but it is not a drop-in technical proof rule for:
 
 ```text
 HumanDecision(C,S,I) = TRUE
@@ -231,16 +236,7 @@ Source: https://arxiv.org/abs/2606.02668
 
 The paper defines Consent Integrity by combining WYSIWYS and trusted-path ideas for LLM-agent approvals. The Human-visible action should be rendered from the real operation at the system boundary by a trusted mediator, not from agent narration, and bound to the exact action that executes.
 
-Important limitation stated by the paper: the prototype implements analyzer/renderer/bind-to-execution, while total mediation and the trusted path are specified/assumed rather than fully implemented.
-
-### Mapping to X1C
-
-- R1: partially addressed through the trusted-path assumption, but not eliminated as an engineering/epistemic problem;
-- R2: explicit approval is central;
-- R3: strongly covered through truthful rendering and exact-action approval;
-- R4: strongly covered through bind-to-execution.
-
-This work substantially narrows any plausible novelty claim for Project 8. Any future contribution must be framed relative to Consent Integrity rather than as if LLM approval binding were unexplored.
+This substantially narrows any plausible novelty claim for Project 8.
 
 ## Observational-equivalence criterion
 
@@ -250,11 +246,11 @@ X1C uses the falsification question:
 
 If yes, the observations are insufficient to justify `HumanDecision=TRUE`.
 
-Searches in this review combined terms around observational equivalence with consent, authorization, Human decision provenance, authentication and AI agents.
+Observational equivalence itself is standard formal machinery. The potentially distinctive use here is its application as a falsifier of **semantic decision authorship**.
 
-### Result
+### Current result
 
-`STANDARD EQUIVALENT NOT FOUND IN THIS REVIEW`
+`STANDARD DECISION-AUTHORSHIP EQUIVALENT NOT FOUND IN THIS REVIEW`
 
 This must **not** be promoted to:
 
@@ -268,36 +264,41 @@ or:
 PROJECT 8 IS NOVEL
 ```
 
-Observational equivalence is a broad formal concept used in many technical fields. A more systematic literature search across epistemic logic, security protocol analysis, non-repudiation, provenance, accountability and formal authorization could still reveal a close equivalent.
+## Gap statement after composition test
 
-## Gap statement after this review
-
-The current evidence supports a narrower statement than a novelty claim:
-
-> Existing work separately provides mature concepts for protected paths, user presence/verification, transaction confirmation, exact referent binding, execution binding and meaningful Human control. The present review did not identify a standard domain-independent rule that composes these into an epistemic predicate `HumanDecision(C,S,I)=TRUE` and falsifies that predicate whenever the same observations admit an equivalent history without the attributed Human decision.
-
-Status:
+The earlier broad statement:
 
 ```text
-PLAUSIBLE GAP / NOT YET NOVELTY
+PLAUSIBLE FORMALIZATION GAP / NOT YET NOVELTY
+```
+
+can now be narrowed to:
+
+> Existing formal machinery appears sufficient for protected Human-side roles/channels, agreement on exact data, unique matching instances, referent binding, replay resistance and provenance. The tested composition remains unable to derive semantic Human decision authorship from the trace unless the Human-side event's decision semantics are independently grounded rather than assumed by naming/specification.
+
+Current status:
+
+```text
+PLAUSIBLE SEMANTIC-GROUNDING / FORMALIZATION GAP
+NOT YET NOVELTY
 ```
 
 ## Implication for X1D
 
 X1D should **not be built yet**.
 
-Before authorizing X1D, decide whether the plausible gap above survives a deeper search specifically in:
+Before authorizing X1D, perform a bounded deep pass specifically around:
 
-- security protocol epistemics / authentication logics;
-- non-repudiation and intent/authorship evidence;
-- formal provenance and accountability;
-- usable security / ceremony analysis;
-- human-computer interaction consent semantics;
-- agentic AI approval/oversight literature.
+- formal HCI consent semantics;
+- security-ceremony semantics beyond event labels;
+- epistemic/action logics of agency and intention;
+- authorization-with-intent;
+- formal models connecting observable action to consent/decision semantics;
+- human-protocol interaction models that explicitly avoid importing intent by event naming.
 
-If an established formal model already provides the needed predicate, Project 8 should adopt or adapt it rather than invent a parallel vocabulary.
+If an established model grounds the Human-side event sufficiently, Project 8 should adopt it and rerun the composition test.
 
-If not, X1D can then be framed as a test of a specific state-of-the-art gap rather than as a new mechanism-design exercise.
+If not, the gap claim can be strengthened carefully to a specific **Human decision-event semantic grounding gap**.
 
 ## Current recommendation
 
@@ -307,5 +308,5 @@ DO NOT DESIGN AUTHENTICATION/BINDING MECHANISMS.
 DO NOT CLAIM NOVELTY.
 
 NEXT:
-DEEPEN LITERATURE SEARCH AROUND THE OBSERVATIONAL-EQUIVALENCE / EPISTEMIC-AUTHORSHIP GAP.
+BOUND THE RESEARCH AROUND HUMAN DECISION-EVENT SEMANTIC GROUNDING.
 ```
