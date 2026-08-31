@@ -1,0 +1,126 @@
+name: X1D-A5 corrected exact-head replay
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/x1d-a5-corrected-exact-head-replay.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  exact-head-replay:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Record harness provenance
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "GITHUB_RUN_ID=${GITHUB_RUN_ID}"
+          echo "GITHUB_JOB=${GITHUB_JOB}"
+          echo "GITHUB_RUN_ATTEMPT=${GITHUB_RUN_ATTEMPT}"
+          echo "RUNNER_OS=${RUNNER_OS}"
+          echo "RUNNER_ARCH=${RUNNER_ARCH}"
+
+      - name: Checkout exact corrected ScriptOps head
+        uses: actions/checkout@v4
+        with:
+          repository: FJ899/scriptops
+          ref: a80d7714d90213c4f3e5aa514a0119560067dc01
+          persist-credentials: false
+          path: scriptops-target
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Prepare dependency
+        working-directory: scriptops-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '+ python -m pip install pyyaml'
+          python -m pip install pyyaml
+
+      - name: Establish exact target identity
+        working-directory: scriptops-target
+        shell: bash
+        run: |
+          set -euo pipefail
+          EXPECTED_HEAD='a80d7714d90213c4f3e5aa514a0119560067dc01'
+          EXPECTED_TREE='31e4ad15bd7257dc95890dafbae41c234d03c431'
+          EXPECTED_CODE_BLOB='9de6b6931563ac686e3b4440c623f5522653c61e'
+          EXPECTED_TEST_BLOB='1c1f9070b626784d8c8810378402d310935a5d84'
+
+          echo "GITHUB_RUN_ID=${GITHUB_RUN_ID}"
+          echo "GITHUB_JOB=${GITHUB_JOB}"
+          echo "GITHUB_RUN_ATTEMPT=${GITHUB_RUN_ATTEMPT}"
+          echo "RUNNER_OS=${RUNNER_OS}"
+          echo "RUNNER_ARCH=${RUNNER_ARCH}"
+          echo "PYTHON=$(python --version 2>&1)"
+          echo "GIT=$(git --version 2>&1)"
+
+          echo '+ git rev-parse HEAD'
+          HEAD_OBSERVED="$(git rev-parse HEAD)"
+          echo "${HEAD_OBSERVED}"
+          test "${HEAD_OBSERVED}" = "${EXPECTED_HEAD}"
+
+          echo "+ git rev-parse 'HEAD^{tree}'"
+          TREE_OBSERVED="$(git rev-parse 'HEAD^{tree}')"
+          echo "${TREE_OBSERVED}"
+          test "${TREE_OBSERVED}" = "${EXPECTED_TREE}"
+
+          echo '+ git hash-object phase6/x1d_a5_github_boundary.py'
+          CODE_BLOB_OBSERVED="$(git hash-object phase6/x1d_a5_github_boundary.py)"
+          echo "${CODE_BLOB_OBSERVED}"
+          test "${CODE_BLOB_OBSERVED}" = "${EXPECTED_CODE_BLOB}"
+
+          echo '+ git hash-object tests/test_phase6_x1d_a5_github_boundary.py'
+          TEST_BLOB_OBSERVED="$(git hash-object tests/test_phase6_x1d_a5_github_boundary.py)"
+          echo "${TEST_BLOB_OBSERVED}"
+          test "${TEST_BLOB_OBSERVED}" = "${EXPECTED_TEST_BLOB}"
+
+          echo '+ git symbolic-ref -q HEAD'
+          if git symbolic-ref -q HEAD; then
+            echo 'TARGET_CHECKOUT_DETACHED=false'
+            exit 1
+          else
+            echo 'TARGET_CHECKOUT_DETACHED=true'
+          fi
+
+          echo '+ git status --porcelain=v1 --untracked-files=all'
+          STATUS_OBSERVED="$(git status --porcelain=v1 --untracked-files=all)"
+          printf '%s\n' "${STATUS_OBSERVED}"
+          test -z "${STATUS_OBSERVED}"
+          echo 'TARGET_WORKTREE_CLEAN=true'
+
+          echo '+ git diff --quiet -- phase6/x1d_a5_github_boundary.py tests/test_phase6_x1d_a5_github_boundary.py'
+          git diff --quiet -- phase6/x1d_a5_github_boundary.py tests/test_phase6_x1d_a5_github_boundary.py
+          echo 'TARGET_FILES_UNMODIFIED=true'
+          echo 'TARGET_IS_SYNTHETIC_PR_MERGE_REF=false'
+
+      - name: Replay exact authorized commands
+        working-directory: scriptops-target
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "+ python -m compileall -q phase6 scripts/verify_repository.py tests/test_phase6_scriptops_smoke.py"
+          python -m compileall -q phase6 scripts/verify_repository.py tests/test_phase6_scriptops_smoke.py
+          echo 'COMMAND_1_EXIT=0'
+
+          echo '+ python scripts/verify_repository.py'
+          python scripts/verify_repository.py
+          echo 'COMMAND_2_EXIT=0'
+
+          echo '+ python -m unittest tests.test_phase6_x1d_a5_github_boundary -v'
+          python -m unittest tests.test_phase6_x1d_a5_github_boundary -v
+          echo 'COMMAND_3_EXIT=0'
+
+          echo "+ python -m unittest discover -s tests -p 'test_phase6_*.py' -v"
+          python -m unittest discover -s tests -p 'test_phase6_*.py' -v
+          echo 'COMMAND_4_EXIT=0'
