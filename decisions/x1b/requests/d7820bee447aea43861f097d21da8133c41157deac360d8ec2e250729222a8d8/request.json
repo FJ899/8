@@ -1,0 +1,54 @@
+{
+  "accepted_scene_path": "scenes/SCN-999999.fountain",
+  "accepted_scene_sha256": "9ccd5f8d9656df5d0221a700bff7b471f99b5e5b548ce22ad2a34a32135c5aaf",
+  "candidate_path": "proof-only/F005-INERT-CANDIDATE.txt",
+  "candidate_sha256": "32c396f8973c4368598f20bfbb733a832489e33676ef693937ff08ab6dce3c75",
+  "decision_statement": "Approve accepting exactly the presented scene file for SCN-999999 under the material effect below.",
+  "human_authority": {
+    "channel": "github-pull-request-review",
+    "display_login_at_brief_freeze": "litrgratis-pixel",
+    "evidence_repository": "FJ899/8",
+    "human_github_user_id": 226907434,
+    "review_marker_version": "X1B-HUMAN-DECISION-V2",
+    "review_state": "APPROVED"
+  },
+  "impact_report_path": "proof-only/F005-INERT-IMPACT.json",
+  "impact_report_sha256": "800762b02b3484c788f7f7a09f652888546f0d8fd167e7b431cc4c18e388d5fd",
+  "known_material_consequences": [
+    "replace scenes/SCN-999999.fountain with the exact presented accepted-scene bytes",
+    "append exactly one derived X1B Human-decision provenance record to .scriptops/decision-log.ndjson",
+    "atomically advance local FJ899/scriptops refs/heads/main from the exact Human-bound base to one commit containing exactly those two tracked logical changes"
+  ],
+  "material_effect": {
+    "canonical_ref": "refs/heads/main",
+    "canonical_scene": {
+      "mode": "100644",
+      "path": "scenes/SCN-999999.fountain",
+      "sha256": "9ccd5f8d9656df5d0221a700bff7b471f99b5e5b548ce22ad2a34a32135c5aaf"
+    },
+    "canonicalization": "git-update-ref-compare-and-swap",
+    "changed_paths": [
+      ".scriptops/decision-log.ndjson",
+      "scenes/SCN-999999.fountain"
+    ],
+    "decision_log": {
+      "human_github_user_id": 226907434,
+      "mode": "100644",
+      "operation": "append-one-x1b-decision-record",
+      "path": ".scriptops/decision-log.ndjson",
+      "request_binding": "request_sha256",
+      "review_binding": "review-id-and-immutable-review-commit"
+    },
+    "effect_version": "scriptops-x1b-scene-accept/v2",
+    "old_ref": "0000000000000000000000000000000000000000"
+  },
+  "proposal_rationale": "INERT F005 supported-host GitHub/TLS positive-path probe only. Deliberately non-executable: scriptops_base_head is the impossible all-zero object ID.",
+  "request_nonce": "4bb9b697f16aff952f9d080a269f884929885587f3c1d6ffd6d2d0198017e4ae",
+  "scene_id": "SCN-999999",
+  "schema_version": "x1b-human-decision-request/v2",
+  "scope": [
+    "SCN-999999"
+  ],
+  "scriptops_base_head": "0000000000000000000000000000000000000000",
+  "scriptops_repository": "FJ899/scriptops"
+}
