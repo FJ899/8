@@ -1,0 +1,76 @@
+name: x1b-f005-supported-host-proof
+
+on:
+  push:
+    branches:
+      - proof-runner/x1b-f005-supported-host-proof-20260903
+  pull_request:
+    paths:
+      - '.github/workflows/x1b-f005-supported-host-proof.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact ScriptOps implementation candidate
+        uses: actions/checkout@v4
+        with:
+          repository: FJ899/scriptops
+          ref: b281383be083be24d7e4b9f6c9411d3cc1c317f2
+          path: scriptops
+          persist-credentials: false
+          fetch-depth: 1
+      - name: Run exact isolated F005 GitHub reader only
+        env:
+          PYTHONPATH: scriptops/phase6
+        run: |
+          python - <<'PY'
+          import json
+          import ssl
+          import x1b_human_decision as x1b
+
+          result = x1b.run_network_child(164)
+          tls = result["tls_observation"]
+
+          assert result["schema_version"] == x1b.CHILD_RESULT_SCHEMA
+          assert result["human_github_user_id"] == 226907434
+          assert result["human_review_state"] == "APPROVED"
+          assert result["human_review_numeric_id"] == 5106168696
+          assert result["human_review_commit_id"] == "a9326fc3524f9c1073785901df24520aa9d0a364"
+          assert result["request_sha256"] == "d7820bee447aea43861f097d21da8133c41157deac360d8ec2e250729222a8d8"
+          assert tls["check_hostname"] is True
+          assert tls["verify_mode"] == int(ssl.CERT_REQUIRED)
+          assert int(tls["minimum_version"]) >= int(ssl.TLSVersion.TLSv1_2)
+          assert int(tls["cert_store_stats"]["x509_ca"]) > 0
+          forbidden = {
+              "SSL_CERT_FILE", "SSL_CERT_DIR", "OPENSSL_CONF", "OPENSSL_MODULES",
+              "GITHUB_TOKEN", "GH_TOKEN", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
+              "PYTHONPATH", "PYTHONHOME",
+          }
+          assert not (forbidden & set(tls["environment_keys"]))
+
+          summary = {
+              "proof": "PASS",
+              "scriptops_candidate": "b281383be083be24d7e4b9f6c9411d3cc1c317f2",
+              "decision_pr": 164,
+              "review_numeric_id": result["human_review_numeric_id"],
+              "human_github_user_id": result["human_github_user_id"],
+              "review_state": result["human_review_state"],
+              "review_commit_id": result["human_review_commit_id"],
+              "request_sha256": result["request_sha256"],
+              "tls": {
+                  "check_hostname": tls["check_hostname"],
+                  "verify_mode": tls["verify_mode"],
+                  "minimum_version": tls["minimum_version"],
+                  "cert_store_stats": tls["cert_store_stats"],
+                  "environment_keys": tls["environment_keys"],
+                  "openssl_version": tls["openssl_version"],
+                  "default_verify_paths": tls["default_verify_paths"],
+              },
+          }
+          print("X1B_F005_SUPPORTED_HOST_PROOF=" + json.dumps(summary, sort_keys=True, separators=(",", ":")))
+          PY
