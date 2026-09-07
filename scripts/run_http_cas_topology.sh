@@ -105,6 +105,9 @@ PROVIDER_PID=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["p
 PROVIDER_PORT=$(python -c 'import json,sys; print(json.load(open(sys.argv[1]))["port"])' "$PROVIDER_READY")
 PROVIDER_ENDPOINT="http://127.0.0.1:$PROVIDER_PORT"
 kill -0 "$PROVIDER_PID"
+ss -ltnH "sport = :$PROVIDER_PORT" > "$OUT/provider_listener.txt"
+grep -q "127.0.0.1:$PROVIDER_PORT" "$OUT/provider_listener.txt"
+! grep -q "0.0.0.0:$PROVIDER_PORT" "$OUT/provider_listener.txt"
 
 sudo -u p7broker env PYTHONPATH="$ROOT" python "$ROOT/scripts/http_cas_broker.py" \
   --socket "$SOCKET" \
@@ -272,6 +275,34 @@ for user in p7requester p7hostile; do
   [[ "$PROC_TOKEN_RC" -ne 0 ]]
 done
 
+# Cross-UID process surfaces must not expose the in-memory bearer or open descriptors.
+for user in p7requester p7hostile; do
+  for target in broker provider; do
+    if [[ "$target" == "broker" ]]; then
+      target_pid="$BROKER_PID"
+    else
+      target_pid="$PROVIDER_PID"
+    fi
+    set +e
+    run_as "$user" dd if="/proc/$target_pid/mem" of=/dev/null bs=1 count=1 status=none \
+      >"$OUT/${user}_${target}_proc_mem.stdout" 2>"$OUT/${user}_${target}_proc_mem.stderr"
+    MEM_RC=$?
+    run_as "$user" ls -la "/proc/$target_pid/fd" \
+      >"$OUT/${user}_${target}_proc_fd.stdout" 2>"$OUT/${user}_${target}_proc_fd.stderr"
+    FD_RC=$?
+    run_as "$user" cat "/proc/$target_pid/environ" \
+      >"$OUT/${user}_${target}_proc_environ.stdout" 2>"$OUT/${user}_${target}_proc_environ.stderr"
+    ENV_RC=$?
+    set -e
+    printf '%s\n' "$MEM_RC" > "$OUT/${user}_${target}_proc_mem.exit"
+    printf '%s\n' "$FD_RC" > "$OUT/${user}_${target}_proc_fd.exit"
+    printf '%s\n' "$ENV_RC" > "$OUT/${user}_${target}_proc_environ.exit"
+    [[ "$MEM_RC" -ne 0 ]]
+    [[ "$FD_RC" -ne 0 ]]
+    [[ "$ENV_RC" -ne 0 ]]
+  done
+done
+
 # Loopback endpoint is discoverable/reachable, but without the capability credential it is not effect-capable.
 set +e
 run_as p7requester curl -sS -w '\n%{http_code}\n' \
@@ -385,8 +416,11 @@ c = sqlite3.connect(sys.argv[1])
 rows = c.execute("SELECT resource, value, version, last_admission_id, last_operation_digest, last_mutation_id FROM resources ORDER BY resource").fetchall()
 assert len(rows) == 1
 assert rows[0][0] == "X" and rows[0][1] == "O1" and rows[0][2] == 3
+receipts = c.execute("SELECT status, COUNT(*) FROM receipts GROUP BY status ORDER BY status").fetchall()
+assert receipts == [("committed", 3)]
 for row in rows:
     print("|".join("" if value is None else str(value) for value in row))
+print("RECEIPTS=committed:3")
 PY
 
 # Scan evidence without ever putting the secret on a command line; no evidence/log may contain the bearer value.
@@ -413,4 +447,7 @@ PY
 grep -q '^TOKEN_LEAK_FILE_COUNT=0$' "$OUT/evidence_secret_scan.txt"
 
 set +x
-find "$OUT" -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > "$OUT/SHA256SUMS"
+(
+  cd "$OUT"
+  find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+)
