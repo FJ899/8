@@ -106,6 +106,7 @@ class TargetInstanceProvenanceRepairTests(unittest.TestCase):
         collector = EffectEvidenceCollector(G3EvidenceProducer(restarted_adapter))
         evidence = collector.collect_from_admission_id(admission_id, operation)
         self.assertEqual(evidence.reconciliation.status, ReconciliationStatus.OCCURRED)
+        self.assertEqual(evidence.target_instance_kind, "g3-sqlite-store")
         replay = restarted_adapter.execute(admission_id)
         self.assertEqual((replay.occurred, replay.reason), (False, "admission_consumed"))
 
@@ -139,6 +140,7 @@ class TargetInstanceProvenanceRepairTests(unittest.TestCase):
         collector = EffectEvidenceCollector(G4EvidenceProducer(restarted_adapter))
         evidence = collector.collect_from_admission_id(admission_id, operation)
         self.assertEqual(evidence.reconciliation.status, ReconciliationStatus.OCCURRED)
+        self.assertEqual(evidence.target_instance_kind, "g4-bare-repository")
         replay = restarted_adapter.execute(admission_id)
         self.assertEqual((replay.occurred, replay.reason), (False, "admission_consumed"))
 
@@ -191,8 +193,55 @@ class TargetInstanceProvenanceRepairTests(unittest.TestCase):
         collector = EffectEvidenceCollector(HttpCasEvidenceProducer(restarted_adapter))
         evidence = collector.collect_from_admission_id(admission_id, operation)
         self.assertEqual(evidence.reconciliation.status, ReconciliationStatus.OCCURRED)
+        self.assertEqual(evidence.target_instance_kind, "http-cas-provider-store")
         replay = restarted_adapter.execute(admission_id)
         self.assertEqual((replay.occurred, replay.reason), (False, "admission_consumed"))
+
+    def test_gate_c_common_shape_preserves_three_domain_instance_semantics(self) -> None:
+        g3 = G3Domain()
+        g4 = G4Domain()
+        http = HttpCasDomain()
+        self.addCleanup(g3.close)
+        self.addCleanup(g4.close)
+        self.addCleanup(http.close)
+
+        g3_op = g3.operation("gate-c-g3")
+        g3_adapter = G3EffectAdapter(g3.kernel, g3.observer)
+        g3_original = g3_adapter.historical_target_binding(g3_op)
+        g3_clone_path = Path(g3.tempdir.name) / "gate-c-clone.db"
+        self._sqlite_clone(g3.target_db, g3_clone_path)
+        g3_clone_kernel = G3Kernel(g3.control_db, g3_clone_path, clock=lambda: 100)
+        g3_clone = G3EffectAdapter(g3_clone_kernel, G3Observer(g3_clone_path)).historical_target_binding(g3_op)
+        self.assertEqual((g3_original.kind, g3_original.logical_target), ("g3-sqlite-store", "X"))
+        self.assertEqual(g3_clone.logical_target, g3_original.logical_target)
+        self.assertNotEqual(g3_clone.instance_id, g3_original.instance_id)
+
+        g4_op = g4.operation("gate-c-g4")
+        g4_adapter = G4EffectAdapter(g4.kernel, g4.observer)
+        g4_original = g4_adapter.historical_target_binding(g4_op)
+        g4_clone_path = Path(g4.tempdir.name) / "gate-c-clone.git"
+        shutil.copytree(g4.repo_path, g4_clone_path)
+        g4_clone_kernel = G4Kernel(g4.control_db, g4_clone_path, clock=lambda: 100)
+        g4_clone = G4EffectAdapter(g4_clone_kernel, GitObserver(g4_clone_kernel.git_repo)).historical_target_binding(g4_op)
+        self.assertEqual(g4_original.kind, "g4-bare-repository")
+        self.assertEqual(g4_clone.logical_target, g4_original.logical_target)
+        self.assertNotEqual(g4_clone.instance_id, g4_original.instance_id)
+
+        http_op = http.operation("gate-c-http")
+        http_original = http.adapter.historical_target_binding(http_op)
+        http_clone_path = Path(http.tempdir.name) / "gate-c-provider-clone.db"
+        self._sqlite_clone(http.provider_db, http_clone_path)
+        _process, endpoint = self._start_provider(http_clone_path, http.provider_token, "provider-local")
+        http_clone_observer = HttpCasObserver(endpoint, http.provider_token, "provider-local", timeout=0.15)
+        http_clone = http_clone_observer.historical_target_binding(http_op.resource)
+        self.assertEqual(http_original.kind, "http-cas-provider-store")
+        self.assertEqual(http_clone.logical_target, http_original.logical_target)
+        self.assertNotEqual(http_clone.instance_id, http_original.instance_id)
+
+        self.assertEqual(
+            {g3_original.kind, g4_original.kind, http_original.kind},
+            {"g3-sqlite-store", "g4-bare-repository", "http-cas-provider-store"},
+        )
 
 
 if __name__ == "__main__":
