@@ -14,6 +14,7 @@ from agency_kernel.g1 import (
     AuthorizationResult,
     StartResult,
 )
+from agency_kernel.reconciliation import ReconciliationStatus
 from agency_kernel.runtime import KernelRuntime, RuntimeTrace
 from tests.test_effect_domain_conformance import G3Domain
 
@@ -132,6 +133,7 @@ class DurableEvidenceProvenanceRepairTests(unittest.TestCase):
             real_evidence.admission_id,
             real.admission.admission.admission_id,
         )
+        self.assertFalse(hasattr(real_evidence, "binding_id"))
 
     def test_evidence_can_be_rehydrated_from_durable_admission_after_trace_loss_without_retry(self) -> None:
         domain, adapter, operation, trace = self.admitted_runtime()
@@ -142,7 +144,7 @@ class DurableEvidenceProvenanceRepairTests(unittest.TestCase):
         before = domain.observer.observe("X")
 
         # From this point the transient RuntimeTrace is deliberately not used as
-        # input to recovery.  Only durable admission identity + exact operation
+        # input to recovery. Only durable admission identity + exact operation
         # are supplied to the evidence layer.
         collector = EffectEvidenceCollector(G3EvidenceProducer(adapter))
         evidence = collector.collect_from_admission_id(admission_id, operation)
@@ -156,10 +158,55 @@ class DurableEvidenceProvenanceRepairTests(unittest.TestCase):
         self.assertEqual(evidence.operation_digest, operation.operation_digest)
 
         # Evidence recovery must not retry/re-execute the already-consumed
-        # admission.  A direct second execution remains denied as replay.
+        # admission. A direct second execution remains denied as replay.
         replay = adapter.execute(admission_id)
         self.assertFalse(replay.occurred)
         self.assertEqual(replay.reason, "admission_consumed")
+
+    def test_effect_commit_without_control_completion_rehydrates_occurred_from_admission_only(self) -> None:
+        domain = self.domain()
+        adapter = G3EffectAdapter(domain.kernel, domain.observer)
+        operation = domain.operation("committed-before-control-completion")
+        admitted = adapter.admit(domain.attempt, domain.capability_id, operation)
+        self.assertTrue(admitted.allowed, admitted.reason)
+        admission_id = admitted.admission.admission_id
+
+        # The target mutation commits, but control completion is deliberately
+        # absent. Treat the execution result as transient and do not pass it to
+        # evidence recovery.
+        transient_result = adapter.execute(
+            admission_id,
+            crash_point=domain.crash_after_effect,
+        )
+        self.assertTrue(transient_result.occurred, transient_result.reason)
+        self.assertFalse(domain.kernel.has_control_completion(admission_id))
+        del transient_result
+
+        collector = EffectEvidenceCollector(G3EvidenceProducer(adapter))
+        evidence = collector.collect_from_admission_id(admission_id, operation)
+        self.assertEqual(evidence.reconciliation.status, ReconciliationStatus.OCCURRED)
+        self.assertEqual(evidence.admission_id, admission_id)
+        self.assertIsNotNone(evidence.domain_evidence)
+        self.assertFalse(domain.kernel.has_control_completion(admission_id))
+
+        replay = adapter.execute(admission_id)
+        self.assertFalse(replay.occurred)
+        self.assertEqual(replay.reason, "admission_consumed")
+
+    def test_durable_admission_rehydration_rejects_o1_to_o2_substitution(self) -> None:
+        domain = self.domain()
+        adapter = G3EffectAdapter(domain.kernel, domain.observer)
+        op1 = domain.operation("O1")
+        admitted = adapter.admit(domain.attempt, domain.capability_id, op1)
+        self.assertTrue(admitted.allowed, admitted.reason)
+        admission_id = admitted.admission.admission_id
+        self.assertTrue(adapter.execute(admission_id).occurred)
+
+        op2 = domain.operation("O2")
+        self.assertNotEqual(op1.operation_digest, op2.operation_digest)
+        collector = EffectEvidenceCollector(G3EvidenceProducer(adapter))
+        with self.assertRaisesRegex(ValueError, "admission_operation_mismatch"):
+            collector.collect_from_admission_id(admission_id, op2)
 
 
 if __name__ == "__main__":
