@@ -302,16 +302,35 @@ def _make_handler(path: str | Path, token: str, allow_test_faults: bool):
                 return
             try:
                 payload = json.loads(self.rfile.read(length).decode("utf-8"))
-                if set(payload) != {"admission_id", "operation_digest", "operation"}:
+                base_keys = {"admission_id", "operation_digest", "operation"}
+                if set(payload) not in (base_keys, base_keys | {"expected_target_instance_id"}):
                     raise ValueError("invalid_request")
                 admission_id = str(payload["admission_id"])
                 operation_digest = str(payload["operation_digest"])
                 op = decode_http_operation_payload(payload["operation"])
+                expected_target_instance_id = payload.get("expected_target_instance_id")
+                if expected_target_instance_id is not None and (
+                    not isinstance(expected_target_instance_id, str) or not expected_target_instance_id
+                ):
+                    raise ValueError("invalid_target_instance")
                 if not admission_id or op.operation_digest != operation_digest:
                     raise ValueError("digest_mismatch")
             except (KeyError, TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError):
                 self._json(400, {"error": "invalid_request"})
                 return
+
+            provider_id = _provider_id(db_path)
+            if expected_target_instance_id is not None:
+                current_target_instance_id = _provider_target_instance_id(db_path, provider_id)
+                if current_target_instance_id != expected_target_instance_id:
+                    self._json(
+                        409,
+                        {
+                            "error": "target_instance_mismatch",
+                            "provider_id": provider_id,
+                        },
+                    )
+                    return
 
             fault = self.headers.get("X-Agency-Kernel-Test-Fault", "") if allow_test_faults else ""
             if fault == "delay_before_commit":
@@ -327,7 +346,7 @@ def _make_handler(path: str | Path, token: str, allow_test_faults: bool):
                 self._json(
                     200,
                     {
-                        "provider_id": _provider_id(db_path),
+                        "provider_id": provider_id,
                         "admission_id": admission_id,
                         "operation_digest": operation_digest,
                         "resource": op.resource,
