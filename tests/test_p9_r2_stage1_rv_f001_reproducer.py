@@ -32,7 +32,7 @@ class P9R2Stage1TargetInstanceCounterexample(unittest.TestCase):
         self.assertTrue(executed.occurred, executed.reason)
 
         # T2 is a distinct physical SQLite target-store instance containing a
-        # byte/logically equivalent copy of T1's state and mutation provenance.
+        # logically equivalent copy of T1 state and mutation provenance.
         target_t2 = Path(domain.tempdir.name) / "wrong-target-t2.db"
         self._sqlite_clone(Path(domain.target_db), target_t2)
         self.assertNotEqual(Path(domain.target_db).resolve(), target_t2.resolve())
@@ -43,10 +43,16 @@ class P9R2Stage1TargetInstanceCounterexample(unittest.TestCase):
         wrong_adapter = G3EffectAdapter(wrong_kernel, G3Observer(target_t2))
         collector = EffectEvidenceCollector(G3EvidenceProducer(wrong_adapter))
 
-        evidence = collector.collect_from_admission_id(admission_id, operation)
+        # Stage-1 frozen branch records the pre-repair red form of this attack.
+        # On the Stage-2 repair branch, fail-closed rejection before
+        # reconciliation is a valid repair outcome. If evidence is returned,
+        # it still must never establish historical T1 OCCURRED from T2.
+        try:
+            evidence = collector.collect_from_admission_id(admission_id, operation)
+        except ValueError as exc:
+            self.assertEqual(str(exc), "target_instance_mismatch")
+            return
 
-        # Security requirement for P9-R1-RV-F001. On the frozen pre-repair base
-        # this assertion is expected to FAIL, executing the credible counterexample.
         self.assertNotEqual(
             evidence.reconciliation.status,
             ReconciliationStatus.OCCURRED,
