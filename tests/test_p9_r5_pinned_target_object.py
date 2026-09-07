@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import multiprocessing
-import os
 import shutil
 import sqlite3
+import tempfile
 import threading
 import time
 import unittest
@@ -13,7 +13,15 @@ from agency_kernel.effect_seams import G3EffectAdapter, G4EffectAdapter
 from agency_kernel.g3 import Observer as G3Observer
 from agency_kernel.g4 import GitObserver
 from agency_kernel.http_cas import HttpCasEffectAdapter, Kernel as HttpCasKernel
-from agency_kernel.http_cas_provider import HttpCasObserver, serve_http_cas_provider
+from agency_kernel.http_cas_provider import (
+    HttpCasObserver,
+    _apply_provider_cas,
+    initialize_http_cas_provider,
+    seed_http_cas_resource,
+    serve_http_cas_provider,
+)
+from agency_kernel.http_cas_types import HttpCasOperation
+from agency_kernel.target_instance import filesystem_target_instance_id
 from tests.test_effect_domain_conformance import G3Domain, G4Domain
 from tests.test_http_cas import HttpCasDomain
 
@@ -141,7 +149,7 @@ class PinnedTargetObjectRepairTests(unittest.TestCase):
         replay = G4EffectAdapter(domain.kernel, GitObserver(domain.kernel.git_repo)).execute(admission_id)
         self.assertEqual((replay.occurred, replay.reason), (False, "admission_consumed"))
 
-    def test_http_provider_rebind_during_delay_is_caught_by_pinned_cas_object(self) -> None:
+    def test_http_provider_rebind_during_delay_is_caught_by_sqlite_opened_object(self) -> None:
         domain = HttpCasDomain()
         self.addCleanup(domain.close)
         domain.process.terminate()
@@ -183,7 +191,42 @@ class PinnedTargetObjectRepairTests(unittest.TestCase):
             thread.join(2.0)
 
         self.assertEqual((result.occurred, result.reason), (False, "target_instance_mismatch"))
-        self.assertNotEqual(HttpCasObserver(endpoint, domain.provider_token, "provider-local", timeout=1.0).observe(operation.resource).admission_id, admission_id)
+        self.assertNotEqual(
+            HttpCasObserver(endpoint, domain.provider_token, "provider-local", timeout=1.0)
+            .observe(operation.resource)
+            .admission_id,
+            admission_id,
+        )
+
+    def test_http_repeated_bound_provider_commits_survive_intervening_direct_reads(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            db = Path(td) / "provider.sqlite"
+            initialize_http_cas_provider(db, "provider-local")
+            seed_http_cas_resource(db, "X", "initial", 0)
+            expected = filesystem_target_instance_id(
+                db,
+                namespace="http-cas-provider-store:provider-local",
+            )
+            effects = frozenset({"MODIFY(X)", "PROVENANCE(X)"})
+            for version in range(3):
+                op = HttpCasOperation("X", version, f"v{version + 1}", effects)
+                receipt = _apply_provider_cas(
+                    db,
+                    f"admission-{version}",
+                    op.operation_digest,
+                    op,
+                    expected_target_instance_id=expected,
+                )
+                self.assertEqual(receipt["status"], "committed")
+                # Mirrors the trusted P7 harness read between protected commits.
+                c = sqlite3.connect(str(db))
+                try:
+                    self.assertEqual(
+                        c.execute("SELECT value, version FROM resources WHERE resource='X'").fetchone(),
+                        (f"v{version + 1}", version + 1),
+                    )
+                finally:
+                    c.close()
 
     def test_g3_same_object_path_executes_through_pinned_fd(self) -> None:
         domain = G3Domain()
