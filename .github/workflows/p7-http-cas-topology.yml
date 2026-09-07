@@ -153,6 +153,7 @@ jobs:
             sudo rm -rf "$STAGE"
           }
           trap cleanup_stage EXIT
+          sudo chmod 755 "$STAGE"
           sudo mkdir -p "$STAGE/repo"
           sudo cp -a "$GITHUB_WORKSPACE/." "$STAGE/repo/"
           sudo chown -R root:root "$STAGE/repo"
