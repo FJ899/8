@@ -69,8 +69,9 @@ class EffectAdapter(Protocol[OperationT, ObservationT, ExecutionT]):
     The seam does not own authority, capability selection, routing, or recovery
     policy. P9-R2 adds one historical-target hook whose common *shape* is shared
     while its instance semantics remain domain-specific. P9-R3 requires adapter
-    execution to fail closed if the current target no longer matches that durable
-    historical binding.
+    execution to enforce that durable binding whenever the admission was created
+    through the historically-bound adapter/runtime path. Legacy raw kernel
+    admissions remain compatible but do not acquire P9-R3 target assurance.
     """
 
     def target_identity(self, operation: OperationT) -> str: ...
@@ -177,14 +178,13 @@ class G3EffectAdapter:
         crash_point: Optional[str] = None,
     ) -> PutResult:
         historical = load_operation_target_binding(self._kernel, admission_id)
-        if historical is None:
-            return PutResult(False, "target_binding_absent", "")
-        try:
-            current = self._execution_target_binding(historical.logical_target)
-        except (OSError, ValueError):
-            return PutResult(False, "target_instance_unavailable", historical.logical_target)
-        if current != historical:
-            return PutResult(False, "target_instance_mismatch", historical.logical_target)
+        if historical is not None:
+            try:
+                current = self._execution_target_binding(historical.logical_target)
+            except (OSError, ValueError):
+                return PutResult(False, "target_instance_unavailable", historical.logical_target)
+            if current != historical:
+                return PutResult(False, "target_instance_mismatch", historical.logical_target)
         return self._kernel.execute_put_if_version_admission(admission_id, crash_point=crash_point)
 
     def observe(
@@ -285,14 +285,13 @@ class G4EffectAdapter:
         crash_point: Optional[str] = None,
     ) -> GitExecutionResult:
         historical = load_operation_target_binding(self._kernel, admission_id)
-        if historical is None:
-            return GitExecutionResult(False, "target_binding_absent", self._kernel.protected_ref)
-        try:
-            current = self._execution_target_binding(historical.logical_target)
-        except (OSError, ValueError):
-            return GitExecutionResult(False, "target_instance_unavailable", self._kernel.protected_ref)
-        if current != historical:
-            return GitExecutionResult(False, "target_instance_mismatch", self._kernel.protected_ref)
+        if historical is not None:
+            try:
+                current = self._execution_target_binding(historical.logical_target)
+            except (OSError, ValueError):
+                return GitExecutionResult(False, "target_instance_unavailable", self._kernel.protected_ref)
+            if current != historical:
+                return GitExecutionResult(False, "target_instance_mismatch", self._kernel.protected_ref)
         return self._kernel.execute_git_admission(admission_id, crash_point=crash_point)
 
     def observe(
