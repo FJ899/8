@@ -1,6 +1,6 @@
 # P9-R1 — Durable Evidence Provenance Findings
 
-Status: **OPEN FINDINGS — EXECUTION REPRODUCER CONFIRMED; REPAIR NOT YET APPLIED**
+Status: **REPAIRED / GREEN CANDIDATE — NOT HUMAN-CLOSED**
 
 Review / repair base:
 
@@ -19,103 +19,128 @@ Pre-repair adversarial execution:
 - failure artifact ID: `10023803094`
 - failure artifact ZIP SHA256: `d6d7c831fd880673ed05b021b2d39be8542f282387e26760f6be19bcdfd10690`
 
-This record was created before corrective implementation. A green P8 workflow does not close either finding.
+Verified repair candidate before this documentation-only disposition commit:
+
+- repair HEAD: `8d4a1f31b70dfcd9b2c3611b85e0346e1c5df338`
+- repair TREE: `e4d6c1667bfd6321d500de6e98c6e4c20d37d9ee`
+- workflow run: `34135883125`
+- result: `success`
+- repair artifact ID: `10023953226`
+- repair artifact ZIP SHA256: `4f3ff3fd258365d8c840289d725567949c592739567804a5d0821ffb7f3fc49d`
+- P9-R1 provenance/rehydration attacks: `4/4` GREEN
+- locked G1–G4 + P1–P6 + P8: GREEN
+- G2/G4/P7 physical topology regressions: GREEN
+
+This finding record was created before corrective implementation. Neither the green repair workflow nor this document constitutes Human acceptance or Gate closure.
 
 ---
 
 ## P9-F001 — EffectEvidence trusts non-durable upstream RuntimeTrace identities
 
-**Status:** OPEN — EXECUTION REPRODUCER CONFIRMED
+**Status:** REPAIRED / GREEN CANDIDATE — NOT HUMAN-CLOSED
 
 **Claim attacked:** `EffectEvidence` can serve as an independently auditable reference-only normalization of facts around one exact effect attempt.
 
 **Observed mechanism:**
 
-`EffectEvidenceCollector.collect(trace, operation)` accepts a caller-supplied `RuntimeTrace`. It checks internal consistency among the supplied `AuthorizationResult`, `BindingResult`, `StartResult`, `AdmissionResult`, and exact operation, then uses durable reconciliation for the admission/effect. However, upstream identities are not reconstructed from the durable control ledger before being emitted as evidence.
+`EffectEvidenceCollector.collect(trace, operation)` accepted a caller-supplied `RuntimeTrace`, checked only internal consistency among supplied value objects, then used durable reconciliation for the admission/effect. Upstream identities were not reconstructed from the durable control ledger before being emitted as evidence.
 
 In particular:
 
-- `RuntimeTrace` is a constructible frozen dataclass;
-- `ActionAuthorization`, `ActionAttempt`, `AuthorizationResult`, `StartResult`, `BindingResult`, `CapabilityBinding`, `OperationAdmission`, and `AdmissionResult` are constructible value objects;
+- `RuntimeTrace` and its authorization/start/admission value objects are constructible;
 - `TrustedBindingRegistry` is immutable only in memory;
 - durable `operation_admissions` store `admission_id`, `attempt_id`, `capability_id`, `operation_digest`, and `canonical_operation`, but do not store `binding_id`;
-- the P8 collector emits `request_id`, `authorization_id`, `binding_id`, and `attempt_id` from the supplied trace.
+- the P8 collector emitted `request_id`, `authorization_id`, `binding_id`, and `attempt_id` from the supplied trace.
 
-**Executed counterexample:**
+**Executed pre-repair counterexample:**
 
 `tests.test_p9_r1_evidence_provenance.DurableEvidenceProvenanceRepairTests.test_forged_runtime_trace_cannot_supply_historical_evidence_identities`
 
-The test creates a real admitted/executed G3 operation, preserves its real `AdmissionResult` and execution, then constructs a mutually consistent forged upstream trace with:
-
-- `request_id = request-forged`;
-- `authorization_id = authorization-forged`;
-- `binding_id = binding-forged`;
-- the real `attempt_id` rewritten to point at the forged authorization in the constructed `ActionAttempt`;
-- the same exact trusted adapter object, capability, target, real admission, and exact admitted operation.
+The test created a real admitted/executed G3 operation, preserved its real admission/effect, then constructed a mutually consistent forged upstream trace with attacker-chosen request/authorization/binding identifiers while retaining the same exact trusted adapter, capability, target, real admission, and admitted operation.
 
 Expected: collector rejects the synthetic historical chain.
 
 Observed on run `34135531254`: `AssertionError: ValueError not raised`.
 
-Therefore the current collector accepted the constructed trace far enough to violate the adversarial expectation; durable effect reconciliation did not authenticate the upstream labels supplied by the trace.
+**Repair implemented:**
 
-**Expected invariant:** evidence identities that purport to describe historical request/authorization/attempt provenance are derived from durable trusted records, and fields lacking durable historical provenance are omitted.
+- `EffectEvidenceCollector` now re-reads durable lineage from the trusted control ledger by exact `admission_id`;
+- the durable join binds `operation_admissions → action_attempts → action_authorizations → authorization_consumed → attempt_started → capabilities`, with contract/grant consistency joins;
+- `collect(trace, operation)` treats the supplied trace only as a candidate description and rejects request/authorization/attempt/start/admission values that do not match durable lineage;
+- exact operation canonical bytes/digest and target identity are revalidated against the durable admission/capability resource;
+- `binding_id` was removed from `EffectEvidence` because no durable historical binding event exists; no synthetic provenance was introduced.
 
-**Additional binding finding:** `binding_id` has no durable historical record in the current control schema. P9-R1 therefore selects repair option **B: remove `binding_id` from `EffectEvidence`** rather than synthesize provenance.
+**Repair verification:**
 
-**Invariant at risk:** `EVIDENCE = bound references to facts`, not a mixture of durable effect facts and caller-constructible historical labels.
+- forged upstream RuntimeTrace attack: GREEN (rejected);
+- real durable trace remains collectable;
+- `EffectEvidence` explicitly has no `binding_id` field;
+- inherited P8 reference-only semantics remain GREEN.
+
+**Invariant after repair candidate:** historical request/authorization/attempt/admission/capability identities emitted by `EffectEvidence` come from durable ledger state; non-durable binding identity is omitted.
 
 **Classification:** EVIDENCE PROVENANCE / FALSE HISTORICAL BINDING RISK.
 
-**Minimal reproducer:** `tests/test_p9_r1_evidence_provenance.py`, bound above to exact pre-repair HEAD/TREE/run.
-
-**Disposition:** OPEN. Blocks P8 evidence reuse as an independent assurance basis and blocks evidence/API freeze. Does not by itself establish an untrusted-Executor effect-path bypass under the frozen v0 threat model.
+**Disposition:** REPAIRED CANDIDATE. Human closure/acceptance not inferred.
 
 ---
 
 ## P9-F002 — EffectEvidence cannot be rehydrated after transient RuntimeTrace loss
 
-**Status:** OPEN — EXECUTION REPRODUCER CONFIRMED
+**Status:** REPAIRED / GREEN CANDIDATE — NOT HUMAN-CLOSED
 
 **Claim attacked:** the normalized evidence layer remains usable for post-effect uncertainty / crash recovery when ephemeral runtime state is lost.
 
 **Observed mechanism:**
 
-`KernelRuntime.run()` returns a `RuntimeTrace` only after `adapter.execute()` returns. If execution commits an effect but its return path is lost by exception/process failure, P5 reconciliation can recover from durable admission + target evidence, but P8 collection requires a surviving runtime trace and currently requires `trace.execution is not None`.
+P5 reconciliation could recover from durable admission + target evidence, but P8 exposed only `collect(trace, operation)` and required a surviving runtime trace. There was no durable-admission evidence rehydration path.
 
-**Executed counterexample:**
+**Executed pre-repair counterexample:**
 
 `tests.test_p9_r1_evidence_provenance.DurableEvidenceProvenanceRepairTests.test_evidence_can_be_rehydrated_from_durable_admission_after_trace_loss_without_retry`
 
-The test first creates a real admitted/executed operation, retains only exact durable `admission_id` plus the exact operation for recovery input, and then requests normalized evidence without supplying the transient `RuntimeTrace`.
-
-Expected: read-only evidence rehydration from durable admission identity; target state remains unchanged; a later direct replay of the admission remains denied.
+Expected: read-only evidence rehydration from exact durable admission identity; no effect retry.
 
 Observed on run `34135531254`: `AttributeError: 'EffectEvidenceCollector' object has no attribute 'collect_from_admission_id'`.
 
-This confirms that P5 durable reconciliation semantics exist but P8 has no crash/restart evidence rehydration entry point.
+**Repair implemented:**
 
-**Expected invariant:** post-crash evidence reconstruction can begin from a durable trusted identity (at minimum exact admission identity) and re-read the durable authority/attempt/admission chain plus current target evidence, without retrying the effect.
+`EffectEvidenceCollector.collect_from_admission_id(admission_id, operation)` now:
 
-**Invariant at risk:** post-effect uncertainty must be reconciled from durable evidence; recovery must never depend on blind replay or on ephemeral success objects surviving process failure.
+1. loads the exact durable authority/attempt/admission/capability lineage;
+2. verifies the supplied operation is byte/digest-identical to the persisted admitted operation;
+3. verifies target identity against durable capability resource;
+4. performs read-only reconciliation using current target/domain evidence;
+5. returns normalized evidence without calling `authorize`, `start_attempt`, `admit`, or `execute`.
+
+**Repair verification:**
+
+- evidence rehydration after transient trace loss: GREEN;
+- effect state unchanged by evidence collection;
+- direct admission replay remains `admission_consumed`;
+- stronger crash case `effect committed + no control completion + no RuntimeTrace` rehydrates as `OCCURRED` from durable admission + target provenance;
+- O1 admission + O2 supplied to rehydration is rejected as `admission_operation_mismatch`.
+
+**Invariant after repair candidate:** crash/restart evidence reconstruction can begin from durable admission identity and never retries the effect.
 
 **Classification:** DURABLE RECOVERY / EVIDENCE REHYDRATION GAP.
 
-**Minimal reproducer:** `tests/test_p9_r1_evidence_provenance.py`, bound above to exact pre-repair HEAD/TREE/run.
-
-**Disposition:** OPEN. Blocks crash-safe evidence subsystem / independent assurance reuse. Does not invalidate existing P5 reconciliation semantics.
+**Disposition:** REPAIRED CANDIDATE. Human closure/acceptance not inferred.
 
 ---
 
-## Repair constraints
+## Repair constraints and retained limits
 
-P9-R1 repair is bounded by the Human authorization:
+P9-R1 remained within the authorized bounds:
 
 - finding-first history remains durable;
 - no trust in caller-supplied upstream provenance;
-- reconstruct durable request/authorization/attempt/admission lineage from the trusted ledger;
-- `binding_id` must either gain durable historical provenance or be removed from `EffectEvidence`;
-- selected disposition for this repair: remove `binding_id`; do not invent a durable binding event;
-- evidence must be collectable after transient `RuntimeTrace` loss using durable admission identity;
+- no synthetic durable binding event;
 - no retry/re-execution during evidence recovery;
-- no generic Broker work, product/API freeze, status promotion, merge/main movement, release/deploy/tag, or canonical effect.
+- no generic Broker work;
+- no product/API freeze;
+- no merge/main movement;
+- no release/deploy/tag;
+- no canonical effect or status promotion.
+
+Retained architectural limitation: evidence producers still use trusted adapter/kernel internals as a reference-runtime implementation mechanism. P9-R1 does not declare that internal coupling a stable public API.
