@@ -5,6 +5,7 @@ import os
 import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -97,3 +98,42 @@ def persist_operation_target_binding(
     with kernel._connect() as connection:
         ensure_operation_target_binding_schema(connection)
         record_operation_target_binding(connection, admission_id, binding)
+
+
+def load_operation_target_binding(
+    kernel,
+    admission_id: str,
+) -> Optional[HistoricalTargetBinding]:
+    """Load the exact historical target binding for one admitted operation.
+
+    P9-R3 uses this read-only lookup immediately before adapter-level execution.
+    Missing provenance fails closed at the adapter seam; legacy raw domain-kernel
+    execution APIs remain unchanged and are not retroactively assigned evidence.
+    """
+
+    if not isinstance(admission_id, str) or not admission_id:
+        raise ValueError("invalid_admission_id")
+    with kernel._connect() as connection:
+        table = connection.execute(
+            """
+            SELECT 1 FROM sqlite_master
+            WHERE type = 'table' AND name = 'operation_target_bindings'
+            """
+        ).fetchone()
+        if table is None:
+            return None
+        row = connection.execute(
+            """
+            SELECT target_kind, logical_target, target_instance_id
+            FROM operation_target_bindings
+            WHERE admission_id = ?
+            """,
+            (admission_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return HistoricalTargetBinding(
+        str(row["target_kind"]),
+        str(row["logical_target"]),
+        str(row["target_instance_id"]),
+    )
