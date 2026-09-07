@@ -41,6 +41,7 @@ jobs:
             printf 'ACCEPTED_G4_HEAD=%s\n' '930b8cae575edba1becc47fbebd9d944a5ebd68d'
             printf 'WORKFLOW_BLOB=%s\n' "$(git rev-parse HEAD:.github/workflows/p1-common-conformance.yml)"
             printf 'CONFORMANCE_TEST_BLOB=%s\n' "$(git rev-parse HEAD:tests/test_effect_domain_conformance.py)"
+            printf 'ENVELOPE_CONFORMANCE_TEST_BLOB=%s\n' "$(git rev-parse HEAD:tests/test_effect_domain_conformance_envelope.py)"
             printf 'G3_BLOB=%s\n' "$(git rev-parse HEAD:agency_kernel/g3.py)"
             printf 'G4_BLOB=%s\n' "$(git rev-parse HEAD:agency_kernel/g4.py)"
             printf 'UID=%s\n' "$(id -u)"
@@ -69,7 +70,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m unittest -v tests.test_effect_domain_conformance 2>&1 | tee p1-evidence/p1-conformance.log
+          python -m unittest -v \
+            tests.test_effect_domain_conformance \
+            tests.test_effect_domain_conformance_envelope \
+            2>&1 | tee p1-evidence/p1-conformance.log
 
       - name: Run G2 physical capability-boundary oracle
         shell: bash
