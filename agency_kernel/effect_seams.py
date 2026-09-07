@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import copy
+import os
+import subprocess
 from typing import Any, FrozenSet, Optional, Protocol, TypeVar, runtime_checkable
 
 from .g1 import ActionAttempt
@@ -19,9 +21,11 @@ from .g4 import (
     GitObserver,
     GitTreeOperation,
     Kernel as G4Kernel,
+    SanitizedGitRepo,
 )
 from .target_instance import (
     HistoricalTargetBinding,
+    filesystem_fd_target_instance_id,
     filesystem_target_instance_id,
     load_operation_target_binding,
     persist_operation_target_binding,
@@ -30,8 +34,6 @@ from .target_instance import (
 
 @runtime_checkable
 class EffectOperation(Protocol):
-    """Minimal structural contract already shared by G3 and G4 operations."""
-
     possible_effects: Optional[FrozenSet[str]]
 
     def canonical_bytes(self) -> bytes: ...
@@ -42,16 +44,12 @@ class EffectOperation(Protocol):
 
 @runtime_checkable
 class EffectExecutionResult(Protocol):
-    """Common projection of an effect execution result."""
-
     occurred: bool
     reason: str
 
 
 @runtime_checkable
 class EffectObservation(Protocol):
-    """Common attribution/coverage projection of a target observation."""
-
     admission_id: Optional[str]
     operation_digest: Optional[str]
     covered: bool
@@ -65,17 +63,12 @@ ExecutionT = TypeVar("ExecutionT", bound=EffectExecutionResult)
 
 @runtime_checkable
 class EffectAdapter(Protocol[OperationT, ObservationT, ExecutionT]):
-    """Smallest shared effect-domain seam justified by G3/G4/HTTP usage.
+    """Minimal multi-domain effect seam.
 
-    The seam does not own authority, capability selection, routing, or recovery
-    policy. P9-R2 adds one historical-target hook whose common *shape* is shared
-    while its instance semantics remain domain-specific. P9-R3 requires adapter
-    execution to enforce that durable binding whenever the admission was created
-    through the historically-bound adapter/runtime path. P9-R4 additionally
-    requires the route validated for such an execution to be the route delegated
-    to the domain primitive, rather than resolving mutable composition again.
-    Legacy raw kernel admissions remain compatible but do not acquire these
-    historical target-assurance properties.
+    P9-R5 retains the historical-target semantics introduced in P9-R2/R3/R4,
+    but local filesystem domains now pin the concrete object used by the effect
+    primitive instead of relying on a pathname snapshot. Common shape is not a
+    claim of common domain semantics.
     """
 
     def target_identity(self, operation: OperationT) -> str: ...
@@ -123,9 +116,94 @@ class EffectAdapter(Protocol[OperationT, ObservationT, ExecutionT]):
     def has_control_completion(self, admission_id: str) -> bool: ...
 
 
-class G3EffectAdapter:
-    """Thin delegating seam over the existing G3 versioned-store domain."""
+class _PinnedSanitizedGitRepo(SanitizedGitRepo):
+    """Trusted execution-only Git view pinned by an already-open directory FD."""
 
+    def __init__(self, base: SanitizedGitRepo, cwd: str) -> None:
+        # Deliberately do not call SanitizedGitRepo.__init__: the repository is
+        # already initialized/configured. Preserve trusted environment metadata
+        # while all Git object/ref operations execute relative to pinned cwd.
+        self.repo = base.repo
+        self.protected_ref = base.protected_ref
+        self.hooks_dir = base.hooks_dir
+        self._pinned_cwd = cwd
+
+    def git(
+        self,
+        *args: str,
+        input_text: Optional[str] = None,
+        check: bool = True,
+        extra_env: Optional[dict[str, str]] = None,
+        strip_output: bool = True,
+    ) -> str:
+        cp = subprocess.run(
+            ["git", "--git-dir", ".", *args],
+            cwd=self._pinned_cwd,
+            input=input_text,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=self._env(extra_env),
+        )
+        if check and cp.returncode != 0:
+            raise RuntimeError(f"git_failed:{args!r}:{cp.stderr.strip()}")
+        return cp.stdout.strip() if strip_output else cp.stdout
+
+    def git_bytes(
+        self,
+        *args: str,
+        check: bool = True,
+        extra_env: Optional[dict[str, str]] = None,
+    ) -> bytes:
+        cp = subprocess.run(
+            ["git", "--git-dir", ".", *args],
+            cwd=self._pinned_cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            env=self._env(extra_env),
+        )
+        if check and cp.returncode != 0:
+            raise RuntimeError(
+                f"git_failed:{args!r}:{cp.stderr.decode('utf-8', 'replace').strip()}"
+            )
+        return cp.stdout
+
+    def rev_parse_ref(self, *, allow_missing: bool = False) -> Optional[str]:
+        cp = subprocess.run(
+            ["git", "--git-dir", ".", "rev-parse", "--verify", self.protected_ref],
+            cwd=self._pinned_cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=self._env(),
+        )
+        if cp.returncode != 0:
+            if allow_missing:
+                return None
+            raise RuntimeError("protected_ref_absent")
+        return cp.stdout.strip()
+
+    def cas_update(self, new_oid: str, expected_old_oid: str) -> bool:
+        cp = subprocess.run(
+            [
+                "git",
+                "--git-dir",
+                ".",
+                "update-ref",
+                self.protected_ref,
+                new_oid,
+                expected_old_oid,
+            ],
+            cwd=self._pinned_cwd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            env=self._env(),
+        )
+        return cp.returncode == 0
+
+
+class G3EffectAdapter:
     __slots__ = ("_kernel", "_observer")
 
     def __init__(self, kernel: G3Kernel, observer: G3Observer) -> None:
@@ -183,9 +261,6 @@ class G3EffectAdapter:
     ) -> PutResult:
         historical = load_operation_target_binding(self._kernel, admission_id)
         if historical is not None:
-            # Freeze the route before validation. The validated route is then
-            # delegated through a shallow trusted kernel view even if mutable
-            # composition on the original kernel changes after the check.
             bound_target_db = self._kernel.target_db
             try:
                 current = self._execution_target_binding(historical.logical_target)
@@ -193,9 +268,27 @@ class G3EffectAdapter:
                 return PutResult(False, "target_instance_unavailable", historical.logical_target)
             if current != historical:
                 return PutResult(False, "target_instance_mismatch", historical.logical_target)
-            bound_kernel = copy.copy(self._kernel)
-            bound_kernel.target_db = bound_target_db
-            return bound_kernel.execute_put_if_version_admission(admission_id, crash_point=crash_point)
+
+            try:
+                fd = os.open(bound_target_db, os.O_RDWR)
+            except OSError:
+                return PutResult(False, "target_instance_unavailable", historical.logical_target)
+            try:
+                opened = HistoricalTargetBinding(
+                    "g3-sqlite-store",
+                    historical.logical_target,
+                    filesystem_fd_target_instance_id(fd, namespace="g3-sqlite-store"),
+                )
+                if opened != historical:
+                    return PutResult(False, "target_instance_mismatch", historical.logical_target)
+                bound_kernel = copy.copy(self._kernel)
+                bound_kernel.target_db = f"/proc/self/fd/{fd}"
+                return bound_kernel.execute_put_if_version_admission(
+                    admission_id,
+                    crash_point=crash_point,
+                )
+            finally:
+                os.close(fd)
         return self._kernel.execute_put_if_version_admission(admission_id, crash_point=crash_point)
 
     def observe(
@@ -238,8 +331,6 @@ class G3EffectAdapter:
 
 
 class G4EffectAdapter:
-    """Thin delegating seam over the existing G4 sanitized-Git domain."""
-
     __slots__ = ("_kernel", "_observer")
 
     def __init__(self, kernel: G4Kernel, observer: GitObserver) -> None:
@@ -297,7 +388,8 @@ class G4EffectAdapter:
     ) -> GitExecutionResult:
         historical = load_operation_target_binding(self._kernel, admission_id)
         if historical is not None:
-            bound_git_repo = copy.copy(self._kernel.git_repo)
+            bound_repo_template = copy.copy(self._kernel.git_repo)
+            bound_repo_path = self._kernel.git_repo.repo
             bound_protected_ref = self._kernel.protected_ref
             try:
                 current = self._execution_target_binding(historical.logical_target)
@@ -305,10 +397,32 @@ class G4EffectAdapter:
                 return GitExecutionResult(False, "target_instance_unavailable", bound_protected_ref)
             if current != historical:
                 return GitExecutionResult(False, "target_instance_mismatch", bound_protected_ref)
-            bound_kernel = copy.copy(self._kernel)
-            bound_kernel.git_repo = bound_git_repo
-            bound_kernel.protected_ref = bound_protected_ref
-            return bound_kernel.execute_git_admission(admission_id, crash_point=crash_point)
+
+            try:
+                fd = os.open(bound_repo_path, os.O_RDONLY | os.O_DIRECTORY)
+            except OSError:
+                return GitExecutionResult(False, "target_instance_unavailable", bound_protected_ref)
+            try:
+                opened = HistoricalTargetBinding(
+                    "g4-bare-repository",
+                    historical.logical_target,
+                    filesystem_fd_target_instance_id(fd, namespace="g4-bare-repository"),
+                )
+                if opened != historical:
+                    return GitExecutionResult(False, "target_instance_mismatch", bound_protected_ref)
+                pinned_repo = _PinnedSanitizedGitRepo(
+                    bound_repo_template,
+                    f"/proc/self/fd/{fd}",
+                )
+                bound_kernel = copy.copy(self._kernel)
+                bound_kernel.git_repo = pinned_repo
+                bound_kernel.protected_ref = bound_protected_ref
+                return bound_kernel.execute_git_admission(
+                    admission_id,
+                    crash_point=crash_point,
+                )
+            finally:
+                os.close(fd)
         return self._kernel.execute_git_admission(admission_id, crash_point=crash_point)
 
     def observe(
