@@ -33,19 +33,29 @@ class HistoricalTargetBinding:
                 raise ValueError(f"invalid_{name}")
 
 
-def filesystem_target_instance_id(path: str | Path, *, namespace: str) -> str:
-    """Identify the current filesystem object, not its copyable contents.
-
-    This reference-runtime identity is deliberately tied to the concrete local
-    filesystem object using device+inode. A process restart over the same object
-    preserves the identity; copying the store/repository to another object does
-    not. It is not declared as a universal storage identity scheme.
-    """
-
-    resolved = Path(path).resolve()
-    st = os.stat(resolved)
+def _filesystem_stat_instance_id(st: os.stat_result, *, namespace: str) -> str:
     payload = f"{namespace}\0{st.st_dev}\0{st.st_ino}".encode("ascii")
     return hashlib.sha256(payload).hexdigest()
+
+
+def filesystem_target_instance_id(path: str | Path, *, namespace: str) -> str:
+    """Identify the current filesystem object named by a path."""
+
+    resolved = Path(path).resolve()
+    return _filesystem_stat_instance_id(os.stat(resolved), namespace=namespace)
+
+
+def filesystem_fd_target_instance_id(fd: int, *, namespace: str) -> str:
+    """Identify the already-open filesystem object referenced by `fd`.
+
+    Unlike pathname identity, this remains tied to the opened object even if the
+    namespace path is later renamed or rebound. It is a Linux/local-filesystem
+    reference-runtime primitive, not a universal storage identity scheme.
+    """
+
+    if not isinstance(fd, int) or fd < 0:
+        raise ValueError("invalid_target_fd")
+    return _filesystem_stat_instance_id(os.fstat(fd), namespace=namespace)
 
 
 def ensure_operation_target_binding_schema(connection: sqlite3.Connection) -> None:
@@ -86,14 +96,7 @@ def persist_operation_target_binding(
     admission_id: str,
     binding: HistoricalTargetBinding,
 ) -> None:
-    """Persist one historical target binding before trusted runtime execution proceeds.
-
-    The binding write is intentionally separate from the older domain admission
-    transaction. A crash before this write leaves an admission with no historical
-    target proof; evidence recovery must then fail closed rather than inventing
-    provenance. A successful EffectAdapter admission returns only after this
-    record exists.
-    """
+    """Persist one historical target binding before trusted runtime execution proceeds."""
 
     with kernel._connect() as connection:
         ensure_operation_target_binding_schema(connection)
@@ -104,12 +107,7 @@ def load_operation_target_binding(
     kernel,
     admission_id: str,
 ) -> Optional[HistoricalTargetBinding]:
-    """Load the exact historical target binding for one admitted operation.
-
-    P9-R3 uses this read-only lookup immediately before adapter-level execution.
-    Missing provenance fails closed at the adapter seam; legacy raw domain-kernel
-    execution APIs remain unchanged and are not retroactively assigned evidence.
-    """
+    """Load the exact historical target binding for one admitted operation."""
 
     if not isinstance(admission_id, str) or not admission_id:
         raise ValueError("invalid_admission_id")
