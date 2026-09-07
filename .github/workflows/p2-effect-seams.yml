@@ -1,0 +1,113 @@
+name: P2 minimal effect seams
+
+on:
+  push:
+    branches:
+      - p2-minimal-common-effect-seams
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p2-effect-seams-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact P2 candidate SHA
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Bind P2 execution instance
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          mkdir -p p2-evidence
+          {
+            printf 'GITHUB_REPOSITORY=%s\n' "$GITHUB_REPOSITORY"
+            printf 'GITHUB_SHA=%s\n' "$GITHUB_SHA"
+            printf 'GITHUB_RUN_ID=%s\n' "$GITHUB_RUN_ID"
+            printf 'GITHUB_RUN_ATTEMPT=%s\n' "$GITHUB_RUN_ATTEMPT"
+            printf 'HEAD=%s\n' "$(git rev-parse HEAD)"
+            printf 'TREE=%s\n' "$(git rev-parse HEAD^{tree})"
+            printf 'P2_BASE_HEAD=%s\n' '0b68eba635acf662b803a41a612b96aa12991228'
+            printf 'P1_BASE_MAIN_HEAD=%s\n' '9b36a8d0f4a938442939320a46ad44ceaba39e3c'
+            printf 'ACCEPTED_G4_HEAD=%s\n' '930b8cae575edba1becc47fbebd9d944a5ebd68d'
+            printf 'WORKFLOW_BLOB=%s\n' "$(git rev-parse HEAD:.github/workflows/p2-effect-seams.yml)"
+            printf 'EFFECT_SEAMS_BLOB=%s\n' "$(git rev-parse HEAD:agency_kernel/effect_seams.py)"
+            printf 'P2_TEST_BLOB=%s\n' "$(git rev-parse HEAD:tests/test_effect_seams.py)"
+            printf 'P1_CONFORMANCE_BLOB=%s\n' "$(git rev-parse HEAD:tests/test_effect_domain_conformance.py)"
+            printf 'P1_ENVELOPE_BLOB=%s\n' "$(git rev-parse HEAD:tests/test_effect_domain_conformance_envelope.py)"
+            printf 'G3_BLOB=%s\n' "$(git rev-parse HEAD:agency_kernel/g3.py)"
+            printf 'G4_BLOB=%s\n' "$(git rev-parse HEAD:agency_kernel/g4.py)"
+            printf 'UID=%s\n' "$(id -u)"
+            printf 'GID=%s\n' "$(id -g)"
+            printf 'UNAME=%s\n' "$(uname -a)"
+            printf 'PYTHON=%s\n' "$(python --version 2>&1)"
+            printf 'GIT=%s\n' "$(git --version)"
+          } | tee p2-evidence/execution_instance.txt
+
+      - name: Run locked semantic regression oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            python -m unittest -v tests.test_g1
+            python -m unittest -v tests.test_g1_f005
+            python -m unittest -v tests.test_g1_f006
+            python -m unittest -v tests.test_g1_f009
+            python -m unittest -v tests.test_g1_f011
+            python -m unittest -v tests.test_g2
+            python -m unittest -v tests.test_g3
+            python -m unittest -v tests.test_g4 tests.test_g4_f001_f002 tests.test_g4_f003 tests.test_g4_f005
+          } 2>&1 | tee p2-evidence/oracle-a.log
+
+      - name: Run inherited P1 conformance oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v \
+            tests.test_effect_domain_conformance \
+            tests.test_effect_domain_conformance_envelope \
+            2>&1 | tee p2-evidence/p1-conformance.log
+
+      - name: Run P2 effect seam conformance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_effect_seams 2>&1 | tee p2-evidence/p2-effect-seams.log
+
+      - name: Run G2 physical capability-boundary oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/run_g2_topology.sh p2-evidence/g2-topology
+
+      - name: Run G4 physical capability-boundary oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/run_g4_topology.sh p2-evidence/g4-topology
+
+      - name: Hash P2 evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          find p2-evidence -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > p2-evidence/SHA256SUMS
+
+      - name: Upload P2 evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: p2-effect-seams-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: p2-evidence/
+          if-no-files-found: error
+          retention-days: 14
