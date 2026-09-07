@@ -41,68 +41,79 @@ def _connect_unlocked(path: str | Path) -> sqlite3.Connection:
 
 
 def _connect(path: str | Path) -> sqlite3.Connection:
-    # Serializing only sqlite3_open/PRAGMA setup lets the bound-target helper
-    # distinguish descriptors created by its own connection from descriptors
-    # opened concurrently by another HTTP request. The connection itself is not
-    # held under this lock for its transaction lifetime.
     with _DB_OPEN_LOCK:
         return _connect_unlocked(path)
 
 
-def _fd_snapshot() -> dict[int, tuple[int, int, int]]:
-    result: dict[int, tuple[int, int, int]] = {}
-    for name in os.listdir("/proc/self/fd"):
-        try:
-            fd = int(name)
-            st = os.fstat(fd)
-        except (OSError, ValueError):
-            continue
-        result[fd] = (int(st.st_dev), int(st.st_ino), int(st.st_mode))
-    return result
+def _fd_link(fd: int) -> Optional[str]:
+    try:
+        value = os.readlink(f"/proc/self/fd/{fd}")
+    except OSError:
+        return None
+    deleted_suffix = " (deleted)"
+    if value.endswith(deleted_suffix):
+        value = value[: -len(deleted_suffix)]
+    if not os.path.isabs(value):
+        return None
+    return os.path.abspath(value)
 
 
 def _connect_bound_target(
     path: str | Path,
     expected_target_instance_id: str,
 ) -> tuple[sqlite3.Connection, str]:
-    """Open SQLite normally, then verify the file object SQLite itself opened.
+    """Open SQLite normally, then verify the main DB object it actually uses.
 
-    P9-R5 must bind object identity through the effect transaction, but using
-    `/proc/self/fd/N` as SQLite's database *pathname* destabilizes WAL/SHM
-    handling in the physical multi-process topology. Instead, this helper lets
-    SQLite open the normal configured route, identifies the main DB descriptor
-    opened by that exact connection, validates its `fstat` identity, and keeps
-    the same sqlite3.Connection alive for the subsequent transaction.
+    The connection is opened with the normal pathname so WAL/SHM behavior stays
+    identical to the established provider. `PRAGMA database_list` identifies the
+    main database filename for this exact sqlite3.Connection. A process FD whose
+    kernel link names that same file must then carry the historical target
+    instance identity. The same connection is kept alive for the CAS transaction.
 
-    Thus namespace rebind before open selects T2 and fails the descriptor check;
-    namespace rebind after open cannot redirect the already-open SQLite handle.
+    If a route is rebound before sqlite3_open, `database_list` names T2 and the
+    T1 historical identity cannot match. If the namespace is rebound after open,
+    the connection's already-open main DB descriptor remains T1 and the ensuing
+    transaction continues on that object.
     """
 
     if not isinstance(expected_target_instance_id, str) or not expected_target_instance_id:
         raise ValueError("invalid_target_instance")
 
     with _DB_OPEN_LOCK:
-        before = _fd_snapshot()
         c = _connect_unlocked(path)
         try:
+            main_rows = [
+                row
+                for row in c.execute("PRAGMA database_list").fetchall()
+                if str(row["name"]) == "main"
+            ]
+            if len(main_rows) != 1 or not str(main_rows[0]["file"]):
+                raise RuntimeError("provider_main_database_absent")
+            main_filename = os.path.abspath(str(main_rows[0]["file"]))
+
             row = c.execute("SELECT provider_id FROM provider_metadata").fetchone()
             if row is None:
                 raise RuntimeError("provider_identity_absent")
             provider_id = str(row["provider_id"])
-            after = _fd_snapshot()
-            candidates = [fd for fd, identity in after.items() if before.get(fd) != identity]
-            matching = []
-            for fd in candidates:
+            namespace = f"http-cas-provider-store:{provider_id}"
+
+            matching_fd = False
+            for name in os.listdir("/proc/self/fd"):
                 try:
-                    instance_id = filesystem_fd_target_instance_id(
-                        fd,
-                        namespace=f"http-cas-provider-store:{provider_id}",
-                    )
+                    fd = int(name)
+                except ValueError:
+                    continue
+                if _fd_link(fd) != main_filename:
+                    continue
+                try:
+                    instance_id = filesystem_fd_target_instance_id(fd, namespace=namespace)
                 except (OSError, ValueError):
                     continue
                 if instance_id == expected_target_instance_id:
-                    matching.append(fd)
-            if not matching:
+                    matching_fd = True
+                    break
+
+            if not matching_fd:
                 raise RuntimeError("target_instance_mismatch")
             return c, provider_id
         except BaseException:
@@ -409,9 +420,6 @@ def _make_handler(path: str | Path, token: str, allow_test_faults: bool):
 
             provider_id = _provider_id(db_path)
             if expected_target_instance_id is not None:
-                # Early path-level check gives prompt rejection. The definitive
-                # P9-R5 check occurs after SQLite opens the exact object that the
-                # CAS transaction will use.
                 current_target_instance_id = _provider_target_instance_id(db_path, provider_id)
                 if current_target_instance_id != expected_target_instance_id:
                     self._json(409, {"error": "target_instance_mismatch", "provider_id": provider_id})
