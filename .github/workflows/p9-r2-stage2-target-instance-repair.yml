@@ -1,0 +1,188 @@
+name: P9-R2 stage2 target-instance provenance repair
+
+on:
+  push:
+    branches:
+      - p9-r2-stage2-target-instance-repair
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p9-r2-stage2-target-instance-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact P9-R2 Stage-2 candidate SHA
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 30
+
+      - name: Bind frozen base and Stage-2 execution identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git merge-base HEAD a482fd2bda8413c47a239eb6339582bf3bbc200d)" = "a482fd2bda8413c47a239eb6339582bf3bbc200d"
+          test "$(git rev-parse a482fd2bda8413c47a239eb6339582bf3bbc200d^{tree})" = "ae2e534b8ad2a5b313e301d64c474dbae00a6160"
+          test "$(git merge-base HEAD 8ca5810e746542f7b4f816987c9544baa855b964)" = "8ca5810e746542f7b4f816987c9544baa855b964"
+          mkdir -p p9-r2-stage2-evidence
+          {
+            printf 'GITHUB_REPOSITORY=%s\n' "$GITHUB_REPOSITORY"
+            printf 'GITHUB_SHA=%s\n' "$GITHUB_SHA"
+            printf 'GITHUB_RUN_ID=%s\n' "$GITHUB_RUN_ID"
+            printf 'GITHUB_RUN_ATTEMPT=%s\n' "$GITHUB_RUN_ATTEMPT"
+            printf 'HEAD=%s\n' "$(git rev-parse HEAD)"
+            printf 'TREE=%s\n' "$(git rev-parse HEAD^{tree})"
+            printf 'BASE_HEAD=%s\n' 'a482fd2bda8413c47a239eb6339582bf3bbc200d'
+            printf 'BASE_TREE=%s\n' 'ae2e534b8ad2a5b313e301d64c474dbae00a6160'
+            printf 'STAGE1_HEAD=%s\n' '8ca5810e746542f7b4f816987c9544baa855b964'
+            printf 'STAGE1_TREE=%s\n' 'b67a46d57a5c6407a2e6f60b5c3b8271ef3ab621'
+            printf 'FINDING=P9-R1-RV-F001\n'
+            printf 'ORIGIN=NEWLY_REVEALED_DURING_POST_REPAIR_REVIEW\n'
+            printf 'WORKFLOW_BLOB=%s\n' "$(git rev-parse HEAD:.github/workflows/p9-r2-stage2-target-instance-repair.yml)"
+            printf 'STAGE1_FINDING_BLOB=%s\n' "$(git rev-parse HEAD:research/P9_R2_STAGE1_RV_F001_FINDING.md)"
+            printf 'STAGE1_REPRODUCER_BLOB=%s\n' "$(git rev-parse HEAD:tests/test_p9_r2_stage1_rv_f001_reproducer.py)"
+            printf 'P9_R2_TEST_BLOB=%s\n' "$(git rev-parse HEAD:tests/test_p9_r2_target_instance_provenance.py)"
+            printf 'TARGET_INSTANCE_BLOB=%s\n' "$(git rev-parse HEAD:agency_kernel/target_instance.py)"
+            printf 'EFFECT_SEAMS_BLOB=%s\n' "$(git rev-parse HEAD:agency_kernel/effect_seams.py)"
+            printf 'EVIDENCE_BLOB=%s\n' "$(git rev-parse HEAD:agency_kernel/evidence.py)"
+            printf 'G3_BLOB=%s\n' "$(git rev-parse HEAD:agency_kernel/g3.py)"
+            printf 'G4_BLOB=%s\n' "$(git rev-parse HEAD:agency_kernel/g4.py)"
+            printf 'HTTP_BLOB=%s\n' "$(git rev-parse HEAD:agency_kernel/http_cas.py)"
+            printf 'HTTP_PROVIDER_BLOB=%s\n' "$(git rev-parse HEAD:agency_kernel/http_cas_provider.py)"
+            printf 'PYTHON=%s\n' "$(python --version 2>&1)"
+            printf 'GIT=%s\n' "$(git --version)"
+          } | tee p9-r2-stage2-evidence/execution_instance.txt
+
+      - name: Replay exact Stage-1 original T1-to-T2 counterexample
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_p9_r2_stage1_rv_f001_reproducer \
+            2>&1 | tee p9-r2-stage2-evidence/stage1-counterexample-replay.log
+
+      - name: Run P9-R2 Gate A/B/C target-instance tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_p9_r2_target_instance_provenance \
+            2>&1 | tee p9-r2-stage2-evidence/p9-r2-target-instance.log
+
+      - name: Replay P9-F001 and P9-F002 known findings
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_p9_r1_evidence_provenance \
+            2>&1 | tee p9-r2-stage2-evidence/p9-r1-known-findings.log
+
+      - name: Run locked semantic regression oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            python -m unittest -v tests.test_g1
+            python -m unittest -v tests.test_g1_f005
+            python -m unittest -v tests.test_g1_f006
+            python -m unittest -v tests.test_g1_f009
+            python -m unittest -v tests.test_g1_f011
+            python -m unittest -v tests.test_g2
+            python -m unittest -v tests.test_g3
+            python -m unittest -v tests.test_g4 tests.test_g4_f001_f002 tests.test_g4_f003 tests.test_g4_f005
+          } 2>&1 | tee p9-r2-stage2-evidence/oracle-a.log
+
+      - name: Run inherited P1 conformance oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_effect_domain_conformance tests.test_effect_domain_conformance_envelope \
+            2>&1 | tee p9-r2-stage2-evidence/p1-conformance.log
+
+      - name: Run inherited P2 effect seam oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_effect_seams 2>&1 | tee p9-r2-stage2-evidence/p2-effect-seams.log
+
+      - name: Run inherited P3 trusted runtime oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_kernel_runtime tests.test_kernel_runtime_start_denial \
+            2>&1 | tee p9-r2-stage2-evidence/p3-kernel-runtime.log
+
+      - name: Run inherited P4 trusted binding oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_trusted_capability_binding tests.test_trusted_capability_binding_misbind \
+            2>&1 | tee p9-r2-stage2-evidence/p4-binding.log
+
+      - name: Run inherited P5 reconciliation oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_reconciliation 2>&1 | tee p9-r2-stage2-evidence/p5-reconciliation.log
+
+      - name: Run inherited P6 HTTP CAS oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_http_cas 2>&1 | tee p9-r2-stage2-evidence/p6-http-cas.log
+
+      - name: Run inherited P8 effect evidence oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_effect_evidence 2>&1 | tee p9-r2-stage2-evidence/p8-effect-evidence.log
+
+      - name: Run inherited G2 physical capability-boundary oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/run_g2_topology.sh p9-r2-stage2-evidence/g2-topology
+
+      - name: Run inherited G4 physical capability-boundary oracle
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash scripts/run_g4_topology.sh p9-r2-stage2-evidence/g4-topology
+
+      - name: Run inherited P7 HTTP CAS physical adversarial topology
+        shell: bash
+        run: |
+          set -euo pipefail
+          STAGE="$(mktemp -d /tmp/agency-kernel-p9-r2-stage2-code.XXXXXX)"
+          cleanup_stage() { sudo rm -rf "$STAGE"; }
+          trap cleanup_stage EXIT
+          sudo chmod 755 "$STAGE"
+          sudo mkdir -p "$STAGE/repo"
+          sudo cp -a "$GITHUB_WORKSPACE/." "$STAGE/repo/"
+          sudo chown -R root:root "$STAGE/repo"
+          sudo find "$STAGE/repo" -type d -exec chmod 755 {} +
+          sudo find "$STAGE/repo" -type f -exec chmod 644 {} +
+          test "$(sudo git -C "$STAGE/repo" rev-parse HEAD)" = "$GITHUB_SHA"
+          sudo bash -c 'cd "$1" && exec bash scripts/run_http_cas_topology.sh "$2"' _ \
+            "$STAGE/repo" "$GITHUB_WORKSPACE/p9-r2-stage2-evidence/http-cas-topology"
+
+      - name: Hash P9-R2 Stage-2 evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          find p9-r2-stage2-evidence -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > p9-r2-stage2-evidence/SHA256SUMS
+
+      - name: Upload P9-R2 Stage-2 evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: p9-r2-stage2-target-instance-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: p9-r2-stage2-evidence/
+          if-no-files-found: error
+          retention-days: 14

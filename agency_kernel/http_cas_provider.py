@@ -19,6 +19,7 @@ from .http_cas_types import (
     decode_http_operation_payload,
     validate_loopback_endpoint,
 )
+from .target_instance import HistoricalTargetBinding, filesystem_target_instance_id
 
 _MAX_BODY = 65536
 
@@ -136,6 +137,13 @@ def _provider_id(path: str | Path) -> str:
     if row is None:
         raise RuntimeError("provider_identity_absent")
     return str(row["provider_id"])
+
+
+def _provider_target_instance_id(path: str | Path, provider_id: str) -> str:
+    return filesystem_target_instance_id(
+        path,
+        namespace=f"http-cas-provider-store:{provider_id}",
+    )
 
 
 def _receipt_payload(row: sqlite3.Row, provider_id: str) -> dict[str, Any]:
@@ -362,6 +370,16 @@ def _make_handler(path: str | Path, token: str, allow_test_faults: bool):
                 self._json(400, {"error": "invalid_query"})
                 return
             provider_id = _provider_id(db_path)
+            if parsed.path == "/identity":
+                self._json(
+                    200,
+                    {
+                        "provider_id": provider_id,
+                        "target_kind": "http-cas-provider-store",
+                        "target_instance_id": _provider_target_instance_id(db_path, provider_id),
+                    },
+                )
+                return
             if parsed.path == "/state":
                 values = query.get("resource", [])
                 if len(values) != 1:
@@ -450,6 +468,19 @@ class HttpCasObserver:
         if payload.get("provider_id") != self._provider_id:
             raise RuntimeError("provider_identity_mismatch")
         return payload
+
+    def historical_target_binding(self, resource: str) -> HistoricalTargetBinding:
+        payload = self._get("/identity")
+        if payload.get("target_kind") != "http-cas-provider-store":
+            raise RuntimeError("provider_target_kind_mismatch")
+        instance_id = payload.get("target_instance_id")
+        if not isinstance(instance_id, str) or not instance_id:
+            raise RuntimeError("provider_target_instance_absent")
+        return HistoricalTargetBinding(
+            "http-cas-provider-store",
+            resource,
+            instance_id,
+        )
 
     def receipt(self, admission_id: str) -> Optional[HttpCasReceipt]:
         try:

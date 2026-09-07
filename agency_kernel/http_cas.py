@@ -20,6 +20,7 @@ from .http_cas_types import (
     decode_http_operation_payload,
     validate_loopback_endpoint,
 )
+from .target_instance import HistoricalTargetBinding, persist_operation_target_binding
 
 _MAX_BODY = 65536
 
@@ -407,11 +408,23 @@ class HttpCasEffectAdapter:
     def target_identity(self, operation: HttpCasOperation) -> str:
         return operation.resource
 
+    def historical_target_binding(self, operation: HttpCasOperation) -> HistoricalTargetBinding:
+        return self._observer.historical_target_binding(operation.resource)
+
     def supported_possible_effects(self, operation: HttpCasOperation) -> FrozenSet[str]:
         return self._kernel.possible_effects_for(operation.resource)
 
     def admit(self, attempt: ActionAttempt, capability_id: str, operation: HttpCasOperation) -> AdmissionResult:
-        return self._kernel.admit_http_cas(attempt, capability_id, operation)
+        result = self._kernel.admit_http_cas(attempt, capability_id, operation)
+        if result.allowed:
+            if result.admission is None:
+                raise RuntimeError("allowed_admission_missing_object")
+            persist_operation_target_binding(
+                self._kernel,
+                result.admission.admission_id,
+                self.historical_target_binding(operation),
+            )
+        return result
 
     def execute(self, admission_id: str, *, crash_point: Optional[str] = None) -> HttpCasExecutionResult:
         return self._kernel.execute_http_cas_admission(admission_id, crash_point=crash_point)
