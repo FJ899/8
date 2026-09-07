@@ -29,6 +29,8 @@ Expected secure behavior:
 
 `historical admission → T1; restart/recovery → wrong T2; same logical resource X; copied matching provenance → MUST NOT yield OCCURRED for historical T1 claim`.
 
+The Stage-1 GitHub workflow is intentionally **expected-red**: a failing assertion is the executable evidence that the frozen pre-repair base still permits `T2` evidence to establish historical `T1` `OCCURRED`. A green run would mean the counterexample was not reproduced and Stage 1 would remain incomplete.
+
 ## Why this is distinct from P9-F001/P9-F002
 
 P9-F001 repaired upstream control-lineage provenance by reconstructing request/authorization/attempt/admission identities from the durable control ledger.
