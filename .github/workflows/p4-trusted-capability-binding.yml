@@ -46,6 +46,7 @@ jobs:
             printf 'RUNTIME_BLOB=%s\n' "$(git rev-parse HEAD:agency_kernel/runtime.py)"
             printf 'EFFECT_SEAMS_BLOB=%s\n' "$(git rev-parse HEAD:agency_kernel/effect_seams.py)"
             printf 'P4_TEST_BLOB=%s\n' "$(git rev-parse HEAD:tests/test_trusted_capability_binding.py)"
+            printf 'P4_MISBIND_TEST_BLOB=%s\n' "$(git rev-parse HEAD:tests/test_trusted_capability_binding_misbind.py)"
             printf 'P3_TEST_BLOB=%s\n' "$(git rev-parse HEAD:tests/test_kernel_runtime.py)"
             printf 'P3_START_DENIAL_TEST_BLOB=%s\n' "$(git rev-parse HEAD:tests/test_kernel_runtime_start_denial.py)"
             printf 'P2_TEST_BLOB=%s\n' "$(git rev-parse HEAD:tests/test_effect_seams.py)"
@@ -103,7 +104,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m unittest -v tests.test_trusted_capability_binding 2>&1 | tee p4-evidence/p4-binding.log
+          python -m unittest -v \
+            tests.test_trusted_capability_binding \
+            tests.test_trusted_capability_binding_misbind \
+            2>&1 | tee p4-evidence/p4-binding.log
 
       - name: Run G2 physical capability-boundary oracle
         shell: bash
