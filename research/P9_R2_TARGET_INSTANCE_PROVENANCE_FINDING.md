@@ -1,6 +1,6 @@
 # P9-R2 — Target-Instance Provenance Repair Finding
 
-Status: **OPEN / REPAIR AUTHORIZED — NOT HUMAN-CLOSED**
+Status: **REPAIRED / GREEN CANDIDATE — TARGETED REPLAY PASS — BLIND REVIEW PENDING — NOT HUMAN-CLOSED**
 
 ## Frozen repair base
 
@@ -10,93 +10,190 @@ Status: **OPEN / REPAIR AUTHORIZED — NOT HUMAN-CLOSED**
 - target finding: `P9-R1-RV-F001`
 - origin: **NEWLY REVEALED DURING POST-REPAIR REVIEW**
 
-This record is intentionally committed before corrective implementation.
+The original OPEN record was committed before corrective implementation at commit `03114acdc8efd8482f360ff6b8ed561383624a88`.
 
 ## Finding
 
-P9-R1 repaired durable upstream control lineage and crash/restart evidence rehydration, but `EffectEvidenceCollector.collect_from_admission_id()` does not durably bind the historical admission to the concrete historical target instance observed during recovery.
+P9-R1 repaired durable upstream control lineage and crash/restart evidence rehydration, but `EffectEvidenceCollector.collect_from_admission_id()` did not durably bind a historical admission to the concrete historical target instance observed during recovery.
 
-The current durable lineage binds the exact admission, attempt, authorization, capability ID, logical capability resource, operation digest, and canonical operation. It does not bind the admission to a concrete target-store/repository/provider-service instance.
+The pre-repair durable lineage bound the exact admission, attempt, authorization, capability ID, logical capability resource, operation digest, and canonical operation. It did not bind the admission to a concrete target-store/repository/provider-store instance.
 
-Consequences differ by domain:
+The missing semantics were domain-specific:
 
 - **G3:** logical resource identity (for example `X`) is not the identity of the physical target SQLite store instance.
 - **G4:** protected ref identity is not the identity of the bare repository instance.
-- **HTTP CAS:** provider/resource identity is not automatically proof of the concrete historical service instance used by the admission.
+- **HTTP CAS:** provider/resource identity is not automatically proof of the concrete historical provider-store instance.
 
-A restart-time adapter/observer configured for the wrong target instance can therefore be semantically compatible at the logical-resource level. If matching target-side provenance is copied or reproduced on that wrong instance, current reconciliation may establish `OCCURRED` without proving that the evidence came from the historical target instance bound to the admission.
+This is an evidence/recovery provenance finding. It is **not** classified here as an untrusted-Executor CAI-001 enforcement bypass, because the frozen threat model trusts Broker/adapter/observer configuration. It blocks independent durable evidence closure for crash/restart assurance until the historical target instance is established.
 
-This is an evidence/recovery provenance finding. It is **not** presently classified as an untrusted-Executor CAI-001 enforcement bypass, because the frozen threat model trusts Broker/adapter/observer configuration. It blocks independent durable evidence closure for crash/restart assurance.
+## Executed pre-repair counterexample
 
-## Required repair gates
+Pre-repair reproducer candidate:
 
-### Gate A — substitution rejection
+- HEAD: `65e62aed56da3fa86899a3dbcd063b3f339b8915`
+- TREE: `265943d918cb1612a8ef3f3295877db6770fe2ab`
+- workflow run: `34141054462`
+- result: `failure` at `Run P9-R2 Gate A/B target-instance tests`
+- artifact ID: `10025901566`
+- artifact ZIP SHA256: `425b3e63b43d335c6384e4e75cd53d9a8ad1147ebddd6be26163f8b69523c637`
 
-Historical admission targets `T1`; restart reconstruction points to different `T2`; logical resource/ref remains the same and matching copied/parallel provenance exists.
+Observed before repair:
 
-**Required:** recovery MUST NOT establish `OCCURRED` for the historical `T1` claim.
+- G3 historical T1 -> cloned T2 with copied target provenance: `ValueError not raised` — Gate A FAIL.
+- G4 historical T1 -> cloned T2 repository with matching commit/provenance: `ValueError not raised` — Gate A FAIL.
+- HTTP historical T1 -> cloned provider DB with the same provider ID/token and matching receipts/state: `ValueError not raised` — Gate A FAIL.
+- G3 restart over the same T1 store: Gate B already PASS.
+- G4 restart over the same T1 repository: Gate B already PASS.
+- HTTP new provider process/endpoint over the same T1 provider DB: Gate B already PASS.
 
-### Gate B — legitimate rehydration
+Thus the executed counterexample isolated the missing target-instance binding rather than a generic inability to recover after restart.
 
-Historical admission targets `T1`; process state is lost; a new trusted process reconstructs the adapter/observer for the same historical `T1`.
+## Repair implemented
 
-**Required:** durable evidence recovery still works; `OCCURRED` remains derivable when independently established; evidence recovery performs zero effect retries and zero new effect execution.
+### Minimal common shape
 
-### Gate C — domain semantics
+P9-R2 adds an opaque `HistoricalTargetBinding`:
 
-Historical target binding must be semantically correct for all three domains:
+- `kind`
+- `logical_target`
+- `instance_id`
 
-- G3: logical resource != physical target-store instance.
-- G4: protected ref != repository instance.
-- HTTP CAS: provider/resource identity != automatically concrete historical service instance.
+The common shape does **not** assert common identity semantics.
 
-A common representation may be introduced only if its semantic adequacy is established for all applicable domains.
+Guard retained:
 
-**Guard:** `COMMON TYPE != COMMON SEMANTICS`.
+`COMMON TYPE != COMMON SEMANTICS`.
 
-## Authorized mutation boundary
+### Domain semantics
 
-Mutation is limited to the dependency closure of `P9-R1-RV-F001`:
+**G3**
+
+- kind: `g3-sqlite-store`
+- logical target: operation resource
+- reference-runtime instance identity: opaque hash over the concrete local target DB filesystem object identity (`st_dev`, `st_ino`) under a G3 namespace.
+
+**G4**
+
+- kind: `g4-bare-repository`
+- logical target: protected ref
+- reference-runtime instance identity: opaque hash over the concrete bare-repository directory filesystem object identity (`st_dev`, `st_ino`) under a G4 namespace.
+
+**HTTP CAS**
+
+- kind: `http-cas-provider-store`
+- logical target: HTTP resource
+- reference-runtime instance identity: authenticated provider-side identity of the concrete provider DB filesystem object, namespaced by provider ID.
+- endpoint/port changes do not define target identity; restarting a provider process over the same provider DB preserves the binding.
+
+These identities are intentionally reference-runtime/local-storage semantics. P9-R2 does **not** claim device/inode identity is a universal target identity mechanism for arbitrary storage or distributed services.
+
+### Historical persistence and recovery
+
+A trusted `EffectAdapter.admit()` that succeeds now persists one `operation_target_bindings` row keyed by exact `admission_id` before returning the admitted path to `KernelRuntime`.
+
+The record contains:
+
+- target kind;
+- logical target;
+- opaque target instance ID.
+
+`EffectEvidenceCollector` now:
+
+1. reconstructs the durable authority/attempt/admission/capability lineage;
+2. requires an exact durable target-binding row for the admission;
+3. verifies the historical logical target equals the durable capability resource;
+4. verifies canonical operation bytes/digest and current logical target;
+5. obtains the current adapter/observer target-instance binding using domain-specific semantics;
+6. rejects a different instance with `target_instance_mismatch` **before reconciliation**;
+7. only then performs read-only reconciliation.
+
+`EffectEvidence` records `target_instance_kind` and `target_instance_id` as historical references. It still contains no aggregate authorization/DID/compliance/SATISFIED/PASS field, and `binding_id` remains omitted because P4 binding resolution itself is not persisted as a historical event.
+
+## Transactional / compatibility limits retained deliberately
+
+Historical target binding is persisted in a second trusted control-ledger transaction after the legacy domain admission transaction and before `EffectAdapter.admit()` returns success. P9-R2 does **not** claim atomic `OperationAdmission + HistoricalTargetBinding` persistence.
+
+If a process fails between those writes, the durable admission may exist without historical target proof. Evidence recovery must then fail closed with missing target binding; it must not synthesize restart-time identity.
+
+Legacy/raw direct kernel admission APIs remain unchanged for regression compatibility. An admission created outside the trusted EffectAdapter/runtime path may therefore lack this P9-R2 historical target record; normalized P9-R2 evidence recovery for such an admission is intentionally unavailable/fail-closed rather than inferred.
+
+## Required repair gates and targeted replay
+
+### Gate A — substitution rejection: PASS on repair candidate
+
+Historical admission targets T1; restart reconstruction points to different T2; logical resource/ref remains the same and matching copied provenance exists.
+
+Repair candidate rejects T2 before reconciliation for G3, G4, and HTTP.
+
+### Gate B — legitimate rehydration: PASS on repair candidate
+
+Historical admission targets T1; process state is lost; trusted reconstruction points to the same historical T1.
+
+Repair candidate preserves `OCCURRED` rehydration for G3, G4, and HTTP and direct replay remains `admission_consumed`. No recovery path invokes a new effect.
+
+### Gate C — domain semantics: PASS on repair candidate
+
+Explicit Gate C verifies:
+
+- G3 clone retains logical resource but receives different `g3-sqlite-store` instance ID;
+- G4 clone retains protected ref but receives different `g4-bare-repository` instance ID;
+- HTTP clone retains provider ID/resource but receives different `http-cas-provider-store` instance ID;
+- the three `kind` values remain distinct even though the common data shape is shared.
+
+## Verified repair candidate before this documentation-only disposition commit
+
+- HEAD: `d37312b89e76975a186d2f1679391667d2d89a6a`
+- TREE: `b9536180a85d29ecd8ce8a08642a05a54068aa5e`
+- workflow run: `34141648587`
+- result: `success`
+- artifact ID: `10026123596`
+- artifact ZIP SHA256: `44ba9ff0ad4a62d19907f722ee135e53f02a63894b8751283ceae95187353958`
+
+Verification on that exact candidate:
+
+- P9-R2 Gate A/B/C: `7/7` GREEN;
+- P9-F001/P9-F002 replay: `4/4` GREEN;
+- locked G1-G4 oracle: GREEN;
+- P1 common conformance: `19/19` GREEN;
+- P2 effect seams: `11/11` GREEN;
+- P3 trusted runtime: `10/10` GREEN;
+- P4 trusted binding: `10/10` GREEN;
+- P5 reconciliation: `18/18` GREEN;
+- P6 HTTP CAS: `26/26` GREEN;
+- P8 effect evidence: `9/9` GREEN;
+- G2 physical topology: GREEN;
+- G4 physical topology: GREEN;
+- P7 HTTP physical topology: GREEN.
+
+This broad regression scope is verification evidence only; it does not expand P9-R2 mutation authority.
+
+## Authorized mutation boundary retained
+
+P9-R2 mutations remain limited to the dependency closure of `P9-R1-RV-F001`:
 
 - this durable finding record;
-- the T1 -> wrong-T2 reproducer;
-- legitimate same-T1 crash/restart rehydration tests;
+- T1 -> wrong-T2 reproducer and same-T1 rehydration tests;
 - domain-specific historical target binding for G3, G4, and HTTP CAS;
-- the minimum common seam strictly required to express those bindings;
+- the minimum common seam required to express those bindings;
 - tests/workflow/evidence directly required to prove the repair.
 
-Not authorized during repair:
+No blind post-repair review, speculative abstraction cleanup, unrelated evidence redesign, generic Broker work, API/product freeze, merge/main movement, deploy/release/tag, canonical/status promotion, or Human acceptance inference is part of P9-R2.
 
-- blind post-repair review;
-- changes outside the finding dependency closure;
-- speculative abstraction cleanup;
-- unrelated `EffectEvidence` redesign;
-- generic Broker work;
-- API/product freeze;
-- merge/main movement;
-- deploy/release/tag;
-- canonical/status promotion;
-- inference of Human acceptance.
-
-## Required verification after implementation — not mutation authority
-
-1. replay P9-F001 forged upstream lineage;
-2. replay P9-F002 durable rehydration with zero retry/execute;
-3. replay P9-R1-RV-F001 across G3/G4/HTTP, including T1/T2 rejection and same-T1 restart success;
-4. inherited P1-P8 regression suite;
-5. physical/adversarial topology regressions;
-6. exact-operation/admission/replay regressions;
-7. final candidate fixation: HEAD, TREE, changed files, commit chain, evidence identities.
-
-After green targeted replay, the repair session must stop. Blind post-repair continuation requires a separate verifier-only authorization boundary.
-
-## Genealogy
+## Genealogy / disposition
 
 `P9-R1-RV-F001`
 
 - origin: `NEWLY REVEALED DURING POST-REPAIR REVIEW`
 - repair: `P9-R2`
-- targeted replay: `PENDING`
+- targeted replay: `PASS`
 - blind review survival: `PENDING`
 
-A successful targeted repair is not independent closure.
+Current repair-session status:
+
+- `P9-R2 REPAIR = COMPLETE / GREEN CANDIDATE`
+- `KNOWN-FINDING REPLAY = GREEN`
+- `BLIND POST-REPAIR REVIEW = NOT RESUMED`
+- `POST-REPAIR REVIEW PASS = NO`
+- `HUMAN ACCEPTANCE = NOT INFERRED`
+
+A successful targeted repair is not independent closure. A separate verifier-only `P9-R2-RV` continuation is required before this repair can be said to survive post-repair review.
