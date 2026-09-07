@@ -38,7 +38,14 @@ from agency_kernel.runtime import KernelRuntime
 
 
 class HttpCasDomain:
-    def __init__(self, *, kernel_token: str = "provider-secret", observer_token: str | None = None, provider_id: str = "provider-local") -> None:
+    def __init__(
+        self,
+        *,
+        kernel_token: str = "provider-secret",
+        observer_token: str | None = None,
+        provider_id: str = "provider-local",
+        allow_test_faults: bool = True,
+    ) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
         root = Path(self.tempdir.name)
         self.control_db = root / "control.db"
@@ -52,7 +59,7 @@ class HttpCasDomain:
         self.process = multiprocessing.Process(
             target=serve_http_cas_provider,
             args=(self.provider_db, self.provider_token, "provider-local", child),
-            kwargs={"allow_test_faults": True},
+            kwargs={"allow_test_faults": allow_test_faults},
             daemon=True,
         )
         self.process.start()
@@ -263,6 +270,18 @@ class HttpCasThirdDomainTests(unittest.TestCase):
         self.assertEqual(reconciled.status, ReconciliationStatus.INDETERMINATE)
         self.assertNotEqual(reconciled.status, ReconciliationStatus.NOT_OCCURRED)
 
+    def test_execution_started_but_transport_never_sent_is_indeterminate_and_not_replayed(self) -> None:
+        d = self.domain()
+        op = d.operation("never-sent")
+        admission = self.admitted(d, op)
+        result = d.adapter.execute(admission.admission_id, crash_point="before_transport")
+        self.assertEqual((result.occurred, result.reason), (False, "transport_not_sent"))
+        self.assertEqual(read_http_cas_resource_for_test(d.provider_db, "X"), ("initial", 0))
+        self.assertIsNone(d.observer.receipt(admission.admission_id))
+        reconciled = d.reconciler.reconcile(admission, op)
+        self.assertEqual(reconciled.status, ReconciliationStatus.INDETERMINATE)
+        self.assertEqual(d.adapter.execute(admission.admission_id).reason, "admission_consumed")
+
     def test_forged_success_response_without_provider_state_does_not_create_did(self) -> None:
         d = self.domain()
         op = d.operation("forged")
@@ -275,6 +294,15 @@ class HttpCasThirdDomainTests(unittest.TestCase):
         reconciled = d.reconciler.reconcile(admission, op)
         self.assertEqual(reconciled.status, ReconciliationStatus.INDETERMINATE)
         self.assertEqual(read_http_cas_resource_for_test(d.provider_db, "X"), ("initial", 0))
+
+    def test_fault_header_is_ignored_by_default_provider_mode(self) -> None:
+        d = self.domain(allow_test_faults=False)
+        op = d.operation("real-commit")
+        admission = self.admitted(d, op)
+        result = d.adapter.execute(admission.admission_id, crash_point="forged_success_response")
+        self.assertTrue(result.occurred, result.reason)
+        self.assertEqual(read_http_cas_resource_for_test(d.provider_db, "X"), ("real-commit", 1))
+        self.assertEqual(d.reconciler.reconcile(admission, op).status, ReconciliationStatus.OCCURRED)
 
     def test_committed_receipt_without_matching_state_is_not_did(self) -> None:
         d = self.domain()
