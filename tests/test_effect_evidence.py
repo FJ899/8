@@ -144,7 +144,6 @@ class EffectEvidenceNormalizationTests(unittest.TestCase):
                     evidence.authorization_id,
                     trace.authorization.authorization.authorization_id,
                 )
-                self.assertEqual(evidence.binding_id, binding.binding_id)
                 self.assertEqual(evidence.attempt_id, trace.start.attempt.attempt_id)
                 self.assertEqual(
                     evidence.admission_id,
@@ -178,6 +177,8 @@ class EffectEvidenceNormalizationTests(unittest.TestCase):
     def test_evidence_object_has_no_authority_compliance_or_pass_fields(self) -> None:
         names = {field.name for field in fields(EffectEvidence)}
         self.assertTrue(FORBIDDEN_EVIDENCE_FIELDS.isdisjoint(names))
+        self.assertNotIn("binding_id", names)
+        self.assertFalse(hasattr(EffectEvidence, "binding_id"))
         for forbidden in FORBIDDEN_EVIDENCE_FIELDS:
             self.assertFalse(hasattr(EffectEvidence, forbidden), forbidden)
 
