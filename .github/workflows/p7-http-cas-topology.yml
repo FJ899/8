@@ -148,7 +148,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sudo bash scripts/run_http_cas_topology.sh p7-evidence/http-cas-topology
+          STAGE="$(mktemp -d /tmp/agency-kernel-p7-code.XXXXXX)"
+          cleanup_stage() {
+            sudo rm -rf "$STAGE"
+          }
+          trap cleanup_stage EXIT
+          sudo mkdir -p "$STAGE/repo"
+          sudo cp -a "$GITHUB_WORKSPACE/." "$STAGE/repo/"
+          sudo chown -R root:root "$STAGE/repo"
+          sudo find "$STAGE/repo" -type d -exec chmod 755 {} +
+          sudo find "$STAGE/repo" -type f -exec chmod 644 {} +
+          test "$(sudo git -C "$STAGE/repo" rev-parse HEAD)" = "$GITHUB_SHA"
+          sudo bash -c 'cd "$1" && exec bash scripts/run_http_cas_topology.sh "$2"' _ \
+            "$STAGE/repo" "$GITHUB_WORKSPACE/p7-evidence/http-cas-topology"
 
       - name: Hash P7 evidence
         if: always()
