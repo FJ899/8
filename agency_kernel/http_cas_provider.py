@@ -5,6 +5,7 @@ import json
 import os
 import socket
 import sqlite3
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -27,15 +28,86 @@ from .target_instance import (
 )
 
 _MAX_BODY = 65536
+_DB_OPEN_LOCK = threading.RLock()
 
 
-def _connect(path: str | Path) -> sqlite3.Connection:
+def _connect_unlocked(path: str | Path) -> sqlite3.Connection:
     c = sqlite3.connect(str(path), timeout=30.0, isolation_level=None)
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL")
     c.execute("PRAGMA synchronous=FULL")
     c.execute("PRAGMA busy_timeout=30000")
     return c
+
+
+def _connect(path: str | Path) -> sqlite3.Connection:
+    # Serializing only sqlite3_open/PRAGMA setup lets the bound-target helper
+    # distinguish descriptors created by its own connection from descriptors
+    # opened concurrently by another HTTP request. The connection itself is not
+    # held under this lock for its transaction lifetime.
+    with _DB_OPEN_LOCK:
+        return _connect_unlocked(path)
+
+
+def _fd_snapshot() -> dict[int, tuple[int, int, int]]:
+    result: dict[int, tuple[int, int, int]] = {}
+    for name in os.listdir("/proc/self/fd"):
+        try:
+            fd = int(name)
+            st = os.fstat(fd)
+        except (OSError, ValueError):
+            continue
+        result[fd] = (int(st.st_dev), int(st.st_ino), int(st.st_mode))
+    return result
+
+
+def _connect_bound_target(
+    path: str | Path,
+    expected_target_instance_id: str,
+) -> tuple[sqlite3.Connection, str]:
+    """Open SQLite normally, then verify the file object SQLite itself opened.
+
+    P9-R5 must bind object identity through the effect transaction, but using
+    `/proc/self/fd/N` as SQLite's database *pathname* destabilizes WAL/SHM
+    handling in the physical multi-process topology. Instead, this helper lets
+    SQLite open the normal configured route, identifies the main DB descriptor
+    opened by that exact connection, validates its `fstat` identity, and keeps
+    the same sqlite3.Connection alive for the subsequent transaction.
+
+    Thus namespace rebind before open selects T2 and fails the descriptor check;
+    namespace rebind after open cannot redirect the already-open SQLite handle.
+    """
+
+    if not isinstance(expected_target_instance_id, str) or not expected_target_instance_id:
+        raise ValueError("invalid_target_instance")
+
+    with _DB_OPEN_LOCK:
+        before = _fd_snapshot()
+        c = _connect_unlocked(path)
+        try:
+            row = c.execute("SELECT provider_id FROM provider_metadata").fetchone()
+            if row is None:
+                raise RuntimeError("provider_identity_absent")
+            provider_id = str(row["provider_id"])
+            after = _fd_snapshot()
+            candidates = [fd for fd, identity in after.items() if before.get(fd) != identity]
+            matching = []
+            for fd in candidates:
+                try:
+                    instance_id = filesystem_fd_target_instance_id(
+                        fd,
+                        namespace=f"http-cas-provider-store:{provider_id}",
+                    )
+                except (OSError, ValueError):
+                    continue
+                if instance_id == expected_target_instance_id:
+                    matching.append(fd)
+            if not matching:
+                raise RuntimeError("target_instance_mismatch")
+            return c, provider_id
+        except BaseException:
+            c.close()
+            raise
 
 
 def initialize_http_cas_provider(path: str | Path, provider_id: str) -> None:
@@ -174,118 +246,36 @@ def _apply_provider_cas(
     *,
     expected_target_instance_id: Optional[str] = None,
 ) -> dict[str, Any]:
-    """Apply CAS to the same concrete provider-store object that is validated.
+    if expected_target_instance_id is None:
+        provider_id = _provider_id(path)
+        c = _connect(path)
+    else:
+        c, provider_id = _connect_bound_target(path, expected_target_instance_id)
 
-    Bound P9-R5 requests open the DB object first, validate its fstat identity,
-    and then run SQLite through `/proc/self/fd/N` while the descriptor remains
-    open. Raw legacy requests keep the historical pathname behavior.
-    """
-
-    pinned_fd: Optional[int] = None
-    effect_path = str(path)
     try:
-        if expected_target_instance_id is not None:
-            pinned_fd = os.open(effect_path, os.O_RDWR)
-            effect_path = f"/proc/self/fd/{pinned_fd}"
-            provider_id = _provider_id(effect_path)
-            current_target_instance_id = filesystem_fd_target_instance_id(
-                pinned_fd,
-                namespace=f"http-cas-provider-store:{provider_id}",
-            )
-            if current_target_instance_id != expected_target_instance_id:
-                raise RuntimeError("target_instance_mismatch")
-        else:
-            provider_id = _provider_id(effect_path)
+        c.execute("BEGIN IMMEDIATE")
+        existing = c.execute("SELECT * FROM receipts WHERE admission_id = ?", (admission_id,)).fetchone()
+        if existing is not None:
+            if (
+                str(existing["operation_digest"]) != operation_digest
+                or str(existing["resource"]) != op.resource
+                or int(existing["expected_version"]) != op.expected_version
+                or str(existing["new_value"]) != op.new_value
+            ):
+                c.execute("ROLLBACK")
+                raise ValueError("idempotency_conflict")
+            c.execute("COMMIT")
+            return _receipt_payload(existing, provider_id)
 
-        c = _connect(effect_path)
-        try:
-            c.execute("BEGIN IMMEDIATE")
-            existing = c.execute(
-                "SELECT * FROM receipts WHERE admission_id = ?",
-                (admission_id,),
-            ).fetchone()
-            if existing is not None:
-                if (
-                    str(existing["operation_digest"]) != operation_digest
-                    or str(existing["resource"]) != op.resource
-                    or int(existing["expected_version"]) != op.expected_version
-                    or str(existing["new_value"]) != op.new_value
-                ):
-                    c.execute("ROLLBACK")
-                    raise ValueError("idempotency_conflict")
-                c.execute("COMMIT")
-                return _receipt_payload(existing, provider_id)
-
-            current = c.execute(
-                "SELECT value, version FROM resources WHERE resource = ?",
-                (op.resource,),
-            ).fetchone()
-            before = 0 if current is None else int(current["version"])
-            if before != op.expected_version:
-                c.execute(
-                    """
-                    INSERT INTO receipts(
-                        admission_id, operation_digest, resource, expected_version, new_value,
-                        status, mutation_id, before_version, after_version, created_at
-                    ) VALUES (?, ?, ?, ?, ?, 'rejected_stale', NULL, ?, ?, ?)
-                    """,
-                    (
-                        admission_id,
-                        operation_digest,
-                        op.resource,
-                        op.expected_version,
-                        op.new_value,
-                        before,
-                        before,
-                        int(time.time()),
-                    ),
-                )
-                c.execute("COMMIT")
-                row = c.execute(
-                    "SELECT * FROM receipts WHERE admission_id = ?",
-                    (admission_id,),
-                ).fetchone()
-                assert row is not None
-                return _receipt_payload(row, provider_id)
-
-            after = before + 1
-            mutation_id = str(uuid.uuid4())
-            if current is None:
-                c.execute(
-                    """
-                    INSERT INTO resources(
-                        resource, value, version, last_admission_id, last_operation_digest, last_mutation_id
-                    ) VALUES (?, ?, ?, ?, ?, ?)
-                    """,
-                    (op.resource, op.new_value, after, admission_id, operation_digest, mutation_id),
-                )
-            else:
-                cur = c.execute(
-                    """
-                    UPDATE resources
-                    SET value = ?, version = ?, last_admission_id = ?,
-                        last_operation_digest = ?, last_mutation_id = ?
-                    WHERE resource = ? AND version = ?
-                    """,
-                    (
-                        op.new_value,
-                        after,
-                        admission_id,
-                        operation_digest,
-                        mutation_id,
-                        op.resource,
-                        before,
-                    ),
-                )
-                if cur.rowcount != 1:
-                    c.execute("ROLLBACK")
-                    raise RuntimeError("provider_cas_race")
+        current = c.execute("SELECT value, version FROM resources WHERE resource = ?", (op.resource,)).fetchone()
+        before = 0 if current is None else int(current["version"])
+        if before != op.expected_version:
             c.execute(
                 """
                 INSERT INTO receipts(
                     admission_id, operation_digest, resource, expected_version, new_value,
                     status, mutation_id, before_version, after_version, created_at
-                ) VALUES (?, ?, ?, ?, ?, 'committed', ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, 'rejected_stale', NULL, ?, ?, ?)
                 """,
                 (
                     admission_id,
@@ -293,28 +283,69 @@ def _apply_provider_cas(
                     op.resource,
                     op.expected_version,
                     op.new_value,
-                    mutation_id,
                     before,
-                    after,
+                    before,
                     int(time.time()),
                 ),
             )
             c.execute("COMMIT")
-            row = c.execute(
-                "SELECT * FROM receipts WHERE admission_id = ?",
-                (admission_id,),
-            ).fetchone()
+            row = c.execute("SELECT * FROM receipts WHERE admission_id = ?", (admission_id,)).fetchone()
             assert row is not None
             return _receipt_payload(row, provider_id)
-        except BaseException:
-            if c.in_transaction:
+
+        after = before + 1
+        mutation_id = str(uuid.uuid4())
+        if current is None:
+            c.execute(
+                """
+                INSERT INTO resources(
+                    resource, value, version, last_admission_id, last_operation_digest, last_mutation_id
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (op.resource, op.new_value, after, admission_id, operation_digest, mutation_id),
+            )
+        else:
+            cur = c.execute(
+                """
+                UPDATE resources
+                SET value = ?, version = ?, last_admission_id = ?,
+                    last_operation_digest = ?, last_mutation_id = ?
+                WHERE resource = ? AND version = ?
+                """,
+                (op.new_value, after, admission_id, operation_digest, mutation_id, op.resource, before),
+            )
+            if cur.rowcount != 1:
                 c.execute("ROLLBACK")
-            raise
-        finally:
-            c.close()
+                raise RuntimeError("provider_cas_race")
+        c.execute(
+            """
+            INSERT INTO receipts(
+                admission_id, operation_digest, resource, expected_version, new_value,
+                status, mutation_id, before_version, after_version, created_at
+            ) VALUES (?, ?, ?, ?, ?, 'committed', ?, ?, ?, ?)
+            """,
+            (
+                admission_id,
+                operation_digest,
+                op.resource,
+                op.expected_version,
+                op.new_value,
+                mutation_id,
+                before,
+                after,
+                int(time.time()),
+            ),
+        )
+        c.execute("COMMIT")
+        row = c.execute("SELECT * FROM receipts WHERE admission_id = ?", (admission_id,)).fetchone()
+        assert row is not None
+        return _receipt_payload(row, provider_id)
+    except BaseException:
+        if c.in_transaction:
+            c.execute("ROLLBACK")
+        raise
     finally:
-        if pinned_fd is not None:
-            os.close(pinned_fd)
+        c.close()
 
 
 def _make_handler(path: str | Path, token: str, allow_test_faults: bool):
@@ -367,8 +398,7 @@ def _make_handler(path: str | Path, token: str, allow_test_faults: bool):
                 op = decode_http_operation_payload(payload["operation"])
                 expected_target_instance_id = payload.get("expected_target_instance_id")
                 if expected_target_instance_id is not None and (
-                    not isinstance(expected_target_instance_id, str)
-                    or not expected_target_instance_id
+                    not isinstance(expected_target_instance_id, str) or not expected_target_instance_id
                 ):
                     raise ValueError("invalid_target_instance")
                 if not admission_id or op.operation_digest != operation_digest:
@@ -377,20 +407,14 @@ def _make_handler(path: str | Path, token: str, allow_test_faults: bool):
                 self._json(400, {"error": "invalid_request"})
                 return
 
-            # P9-R4 early check remains useful for prompt rejection. P9-R5's
-            # definitive check is inside _apply_provider_cas after opening the
-            # object that the SQLite transaction will itself use.
             provider_id = _provider_id(db_path)
             if expected_target_instance_id is not None:
+                # Early path-level check gives prompt rejection. The definitive
+                # P9-R5 check occurs after SQLite opens the exact object that the
+                # CAS transaction will use.
                 current_target_instance_id = _provider_target_instance_id(db_path, provider_id)
                 if current_target_instance_id != expected_target_instance_id:
-                    self._json(
-                        409,
-                        {
-                            "error": "target_instance_mismatch",
-                            "provider_id": provider_id,
-                        },
-                    )
+                    self._json(409, {"error": "target_instance_mismatch", "provider_id": provider_id})
                     return
 
             fault = self.headers.get("X-Agency-Kernel-Test-Fault", "") if allow_test_faults else ""
@@ -433,13 +457,7 @@ def _make_handler(path: str | Path, token: str, allow_test_faults: bool):
                 return
             except RuntimeError as exc:
                 if str(exc) == "target_instance_mismatch":
-                    self._json(
-                        409,
-                        {
-                            "error": "target_instance_mismatch",
-                            "provider_id": provider_id,
-                        },
-                    )
+                    self._json(409, {"error": "target_instance_mismatch", "provider_id": provider_id})
                 else:
                     self._json(409, {"error": "provider_conflict"})
                 return
@@ -490,18 +508,7 @@ def _make_handler(path: str | Path, token: str, allow_test_faults: bool):
                         (resource,),
                     ).fetchone()
                 if row is None:
-                    self._json(
-                        200,
-                        {
-                            "provider_id": provider_id,
-                            "resource": resource,
-                            "value": None,
-                            "version": None,
-                            "admission_id": None,
-                            "operation_digest": None,
-                            "mutation_id": None,
-                        },
-                    )
+                    self._json(200, {"provider_id": provider_id, "resource": resource, "value": None, "version": None, "admission_id": None, "operation_digest": None, "mutation_id": None})
                     return
                 self._json(
                     200,
@@ -510,15 +517,9 @@ def _make_handler(path: str | Path, token: str, allow_test_faults: bool):
                         "resource": resource,
                         "value": str(row["value"]),
                         "version": int(row["version"]),
-                        "admission_id": None
-                        if row["last_admission_id"] is None
-                        else str(row["last_admission_id"]),
-                        "operation_digest": None
-                        if row["last_operation_digest"] is None
-                        else str(row["last_operation_digest"]),
-                        "mutation_id": None
-                        if row["last_mutation_id"] is None
-                        else str(row["last_mutation_id"]),
+                        "admission_id": None if row["last_admission_id"] is None else str(row["last_admission_id"]),
+                        "operation_digest": None if row["last_operation_digest"] is None else str(row["last_operation_digest"]),
+                        "mutation_id": None if row["last_mutation_id"] is None else str(row["last_mutation_id"]),
                     },
                 )
                 return
@@ -528,10 +529,7 @@ def _make_handler(path: str | Path, token: str, allow_test_faults: bool):
                     self._json(400, {"error": "invalid_query"})
                     return
                 with _connect(db_path) as c:
-                    row = c.execute(
-                        "SELECT * FROM receipts WHERE admission_id = ?",
-                        (ids[0],),
-                    ).fetchone()
+                    row = c.execute("SELECT * FROM receipts WHERE admission_id = ?", (ids[0],)).fetchone()
                 if row is None:
                     self._json(404, {"error": "receipt_absent"})
                     return
@@ -577,11 +575,7 @@ class HttpCasObserver:
         self._timeout = timeout
 
     def _get(self, path: str) -> dict[str, Any]:
-        req = urllib.request.Request(
-            self._endpoint + path,
-            headers={"Authorization": "Bearer " + self._token},
-            method="GET",
-        )
+        req = urllib.request.Request(self._endpoint + path, headers={"Authorization": "Bearer " + self._token}, method="GET")
         with urllib.request.urlopen(req, timeout=self._timeout) as response:
             payload = json.loads(response.read(_MAX_BODY).decode("utf-8"))
         if payload.get("provider_id") != self._provider_id:
@@ -595,17 +589,11 @@ class HttpCasObserver:
         instance_id = payload.get("target_instance_id")
         if not isinstance(instance_id, str) or not instance_id:
             raise RuntimeError("provider_target_instance_absent")
-        return HistoricalTargetBinding(
-            "http-cas-provider-store",
-            resource,
-            instance_id,
-        )
+        return HistoricalTargetBinding("http-cas-provider-store", resource, instance_id)
 
     def receipt(self, admission_id: str) -> Optional[HttpCasReceipt]:
         try:
-            payload = self._get(
-                "/receipt?" + urllib.parse.urlencode({"admission_id": admission_id})
-            )
+            payload = self._get("/receipt?" + urllib.parse.urlencode({"admission_id": admission_id}))
         except urllib.error.HTTPError as exc:
             if exc.code == 404:
                 return None
@@ -618,30 +606,14 @@ class HttpCasObserver:
             expected_version=int(payload["expected_version"]),
             new_value=str(payload["new_value"]),
             status=str(payload["status"]),
-            mutation_id=None
-            if payload["mutation_id"] is None
-            else str(payload["mutation_id"]),
-            before_version=None
-            if payload["before_version"] is None
-            else int(payload["before_version"]),
-            after_version=None
-            if payload["after_version"] is None
-            else int(payload["after_version"]),
+            mutation_id=None if payload["mutation_id"] is None else str(payload["mutation_id"]),
+            before_version=None if payload["before_version"] is None else int(payload["before_version"]),
+            after_version=None if payload["after_version"] is None else int(payload["after_version"]),
         )
 
-    def observe(
-        self,
-        resource: str,
-        *,
-        covered: bool = True,
-        attribution_ambiguous: bool = False,
-    ) -> HttpCasObservation:
-        payload = self._get(
-            "/state?" + urllib.parse.urlencode({"resource": resource})
-        )
-        admission_id = (
-            None if payload["admission_id"] is None else str(payload["admission_id"])
-        )
+    def observe(self, resource: str, *, covered: bool = True, attribution_ambiguous: bool = False) -> HttpCasObservation:
+        payload = self._get("/state?" + urllib.parse.urlencode({"resource": resource}))
+        admission_id = None if payload["admission_id"] is None else str(payload["admission_id"])
         receipt = None if admission_id is None else self.receipt(admission_id)
         return HttpCasObservation(
             provider_id=str(payload["provider_id"]),
@@ -649,12 +621,8 @@ class HttpCasObserver:
             value=None if payload["value"] is None else str(payload["value"]),
             version=None if payload["version"] is None else int(payload["version"]),
             admission_id=admission_id,
-            operation_digest=None
-            if payload["operation_digest"] is None
-            else str(payload["operation_digest"]),
-            mutation_id=None
-            if payload["mutation_id"] is None
-            else str(payload["mutation_id"]),
+            operation_digest=None if payload["operation_digest"] is None else str(payload["operation_digest"]),
+            mutation_id=None if payload["mutation_id"] is None else str(payload["mutation_id"]),
             receipt_status=None if receipt is None else receipt.status,
             receipt_mutation_id=None if receipt is None else receipt.mutation_id,
             receipt_after_version=None if receipt is None else receipt.after_version,
