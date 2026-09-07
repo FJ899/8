@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 
 from agency_kernel.effect_seams import (
+    EffectAdapter,
     EffectExecutionResult,
     EffectObservation,
     EffectOperation,
@@ -24,11 +25,12 @@ class EffectSeamConformanceTests(unittest.TestCase):
         self.addCleanup(domain.close)
         return domain, adapter_factory(domain.kernel, domain.observer)
 
-    def test_existing_operations_results_and_observations_satisfy_common_projection(self) -> None:
+    def test_existing_operations_results_observations_and_adapters_satisfy_common_projection(self) -> None:
         for domain_factory, adapter_factory in CASES:
             with self.subTest(domain=domain_factory.name):
                 domain, adapter = self.make(domain_factory, adapter_factory)
                 operation = domain.operation("projection")
+                self.assertIsInstance(adapter, EffectAdapter)
                 self.assertIsInstance(operation, EffectOperation)
                 admission = adapter.admit(domain.attempt, domain.capability_id, operation)
                 self.assertTrue(admission.allowed, admission.reason)
@@ -42,7 +44,8 @@ class EffectSeamConformanceTests(unittest.TestCase):
             with self.subTest(domain=domain_factory.name):
                 domain, adapter = self.make(domain_factory, adapter_factory)
                 operation = domain.operation("identity")
-                self.assertEqual(adapter.target_identity(operation), domain.capability_id == "cap-X" and "X" or domain.kernel.protected_ref)
+                expected_target = "X" if domain_factory is G3Domain else domain.kernel.protected_ref
+                self.assertEqual(adapter.target_identity(operation), expected_target)
                 self.assertEqual(adapter.supported_possible_effects(operation), operation.possible_effects)
 
     def test_positive_effect_through_seam_preserves_did_scope_and_satisfaction(self) -> None:
@@ -185,7 +188,7 @@ class EffectSeamConformanceTests(unittest.TestCase):
                 self.assertEqual(compliance.status, "PASS")
                 self.assertEqual(adapter.execute(admission.admission.admission_id).reason, "admission_consumed")
 
-    def test_common_seam_does_not_expose_authority_or_routing_operations(self) -> None:
+    def test_common_seam_does_not_expose_authority_routing_or_backing_objects_publicly(self) -> None:
         forbidden = {
             "authorize",
             "start_attempt",
@@ -193,11 +196,14 @@ class EffectSeamConformanceTests(unittest.TestCase):
             "set_authorized_effect_envelope",
             "select_capability",
             "route",
+            "kernel",
+            "observer",
         }
-        for _domain_factory, adapter_factory in CASES:
+        for domain_factory, adapter_factory in CASES:
             with self.subTest(adapter=adapter_factory.__name__):
-                public_methods = {name for name in dir(adapter_factory) if not name.startswith("_")}
-                self.assertTrue(forbidden.isdisjoint(public_methods))
+                _domain, adapter = self.make(domain_factory, adapter_factory)
+                public_surface = {name for name in dir(adapter) if not name.startswith("_")}
+                self.assertTrue(forbidden.isdisjoint(public_surface))
 
 
 if __name__ == "__main__":
