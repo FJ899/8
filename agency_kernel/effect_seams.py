@@ -22,6 +22,7 @@ from .g4 import (
 from .target_instance import (
     HistoricalTargetBinding,
     filesystem_target_instance_id,
+    load_operation_target_binding,
     persist_operation_target_binding,
 )
 
@@ -66,8 +67,10 @@ class EffectAdapter(Protocol[OperationT, ObservationT, ExecutionT]):
     """Smallest shared effect-domain seam justified by G3/G4/HTTP usage.
 
     The seam does not own authority, capability selection, routing, or recovery
-    policy. P9-R2 adds only one historical-target hook whose common *shape* is
-    shared while its instance semantics remain domain-specific.
+    policy. P9-R2 adds one historical-target hook whose common *shape* is shared
+    while its instance semantics remain domain-specific. P9-R3 requires adapter
+    execution to fail closed if the current target no longer matches that durable
+    historical binding.
     """
 
     def target_identity(self, operation: OperationT) -> str: ...
@@ -137,6 +140,16 @@ class G3EffectAdapter:
             ),
         )
 
+    def _execution_target_binding(self, logical_target: str) -> HistoricalTargetBinding:
+        return HistoricalTargetBinding(
+            "g3-sqlite-store",
+            logical_target,
+            filesystem_target_instance_id(
+                self._kernel.target_db,
+                namespace="g3-sqlite-store",
+            ),
+        )
+
     def supported_possible_effects(self, operation: PutIfVersionOperation) -> FrozenSet[str]:
         return self._kernel.possible_effects_for(operation.resource)
 
@@ -163,6 +176,15 @@ class G3EffectAdapter:
         *,
         crash_point: Optional[str] = None,
     ) -> PutResult:
+        historical = load_operation_target_binding(self._kernel, admission_id)
+        if historical is None:
+            return PutResult(False, "target_binding_absent", "")
+        try:
+            current = self._execution_target_binding(historical.logical_target)
+        except (OSError, ValueError):
+            return PutResult(False, "target_instance_unavailable", historical.logical_target)
+        if current != historical:
+            return PutResult(False, "target_instance_mismatch", historical.logical_target)
         return self._kernel.execute_put_if_version_admission(admission_id, crash_point=crash_point)
 
     def observe(
@@ -226,6 +248,16 @@ class G4EffectAdapter:
             ),
         )
 
+    def _execution_target_binding(self, logical_target: str) -> HistoricalTargetBinding:
+        return HistoricalTargetBinding(
+            "g4-bare-repository",
+            self._kernel.protected_ref,
+            filesystem_target_instance_id(
+                self._kernel.git_repo.repo,
+                namespace="g4-bare-repository",
+            ),
+        )
+
     def supported_possible_effects(self, operation: GitTreeOperation) -> FrozenSet[str]:
         return self._kernel.required_possible_effects(operation)
 
@@ -252,6 +284,15 @@ class G4EffectAdapter:
         *,
         crash_point: Optional[str] = None,
     ) -> GitExecutionResult:
+        historical = load_operation_target_binding(self._kernel, admission_id)
+        if historical is None:
+            return GitExecutionResult(False, "target_binding_absent", self._kernel.protected_ref)
+        try:
+            current = self._execution_target_binding(historical.logical_target)
+        except (OSError, ValueError):
+            return GitExecutionResult(False, "target_instance_unavailable", self._kernel.protected_ref)
+        if current != historical:
+            return GitExecutionResult(False, "target_instance_mismatch", self._kernel.protected_ref)
         return self._kernel.execute_git_admission(admission_id, crash_point=crash_point)
 
     def observe(
