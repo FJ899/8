@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Generic, Optional, Protocol, TypeVar
 
+from .bindings import BindingResult, CapabilityBinding, TrustedBindingRegistry
 from .effect_seams import EffectAdapter, EffectExecutionResult, EffectObservation, EffectOperation
 from .g1 import (
     ActionRequest,
@@ -44,12 +45,13 @@ class RuntimeTrace(Generic[ExecutionT]):
     """Stage-separated trace of one runtime invocation.
 
     This object intentionally has no aggregate PASS/success/authorized field.
-    MAY/authorization, attempt creation, admission, and effect execution remain
-    separate facts and must be interpreted separately by later assurance logic.
+    Authorization, trusted binding, attempt creation, admission, and effect
+    execution remain separate facts for later assurance logic.
     """
 
     request_id: str
     authorization: AuthorizationResult
+    binding: Optional[BindingResult] = None
     start: Optional[StartResult] = None
     admission: Optional[AdmissionResult] = None
     execution: Optional[ExecutionT] = None
@@ -58,26 +60,83 @@ class RuntimeTrace(Generic[ExecutionT]):
 class KernelRuntime(Generic[OperationT, ObservationT, ExecutionT]):
     """One trusted orchestration path from authenticated request to one effect attempt.
 
-    Adapter and capability are bound when the trusted runtime is composed.  They
-    are never selected from ActionRequest or operation payload fields.  The
-    runtime performs no retry and exposes no execute-admission continuation API.
+    P4 supports two trusted composition modes without exposing a routing surface:
+
+    * the P3 fixed mode keeps one adapter/capability pair fixed at construction;
+    * the P4 registry mode resolves one immutable CapabilityBinding only from the
+      persisted successful ActionAuthorization.intent_id.
+
+    Neither mode reads adapter IDs, capability IDs, providers, or resource routing
+    hints from ActionRequest.  The runtime performs no retry and exposes no
+    execute-admission continuation API.
     """
 
-    __slots__ = ("_kernel", "_adapter", "_capability_id")
+    __slots__ = (
+        "_kernel",
+        "_registry",
+        "_fixed_adapter",
+        "_fixed_capability_id",
+    )
 
     def __init__(
         self,
         kernel: RuntimeAuthorityKernel,
-        adapter: EffectAdapter[OperationT, ObservationT, ExecutionT],
-        capability_id: str,
+        binding_source,
+        capability_id: Optional[str] = None,
     ) -> None:
-        if not isinstance(adapter, EffectAdapter):
-            raise TypeError("adapter_does_not_satisfy_effect_contract")
+        self._kernel = kernel
+        if isinstance(binding_source, TrustedBindingRegistry):
+            if capability_id is not None:
+                raise ValueError("registry_mode_rejects_fixed_capability")
+            self._registry = binding_source
+            self._fixed_adapter = None
+            self._fixed_capability_id = None
+            return
+
+        if not isinstance(binding_source, EffectAdapter):
+            raise TypeError("invalid_runtime_binding_source")
         if not isinstance(capability_id, str) or not capability_id:
             raise ValueError("invalid_capability_binding")
-        self._kernel = kernel
-        self._adapter = adapter
-        self._capability_id = capability_id
+        self._registry = None
+        self._fixed_adapter = binding_source
+        self._fixed_capability_id = capability_id
+
+    def _resolve_binding(
+        self,
+        authorization,
+        operation: OperationT,
+    ) -> tuple[BindingResult, Optional[EffectAdapter], Optional[str]]:
+        if self._registry is None:
+            if self._fixed_adapter is None or self._fixed_capability_id is None:
+                raise RuntimeInvariantError("fixed_binding_missing")
+            return (
+                BindingResult(True, "composition_fixed"),
+                self._fixed_adapter,
+                self._fixed_capability_id,
+            )
+
+        result = self._registry.resolve(authorization)
+        if not result.allowed:
+            return result, None, None
+        binding = result.binding
+        if binding is None:
+            raise RuntimeInvariantError("binding_resolution_missing_object")
+        adapter = binding.adapter
+        try:
+            actual_target = adapter.target_identity(operation)
+        except (AttributeError, TypeError, ValueError):
+            return (
+                BindingResult(False, "binding_operation_mismatch", binding),
+                None,
+                None,
+            )
+        if actual_target != binding.target_identity:
+            return (
+                BindingResult(False, "binding_target_mismatch", binding),
+                None,
+                None,
+            )
+        return result, adapter, binding.capability_id
 
     def run(
         self,
@@ -86,9 +145,11 @@ class KernelRuntime(Generic[OperationT, ObservationT, ExecutionT]):
         *,
         authentication_context: AuthenticationContext | None,
     ) -> RuntimeTrace[ExecutionT]:
-        """Execute exactly one linear authorization/admission/effect path.
+        """Execute exactly one linear authorization/binding/admission/effect path.
 
-        A denied pre-effect stage terminates the invocation.  If trusted code
+        A denied pre-effect stage terminates the invocation.  Registry resolution
+        occurs only after successful authorization and is keyed by the durable
+        authorization object, never by untrusted routing fields.  If trusted code
         reports an allowed stage without the corresponding durable object, the
         runtime raises RuntimeInvariantError rather than advancing.
         """
@@ -102,27 +163,52 @@ class KernelRuntime(Generic[OperationT, ObservationT, ExecutionT]):
         if authorization.authorization is None:
             raise RuntimeInvariantError("authorization_missing_durable_object")
 
+        binding_result, adapter, capability_id = self._resolve_binding(
+            authorization.authorization,
+            operation,
+        )
+        if not binding_result.allowed:
+            return RuntimeTrace(
+                request_id=request.request_id,
+                authorization=authorization,
+                binding=binding_result,
+            )
+        if adapter is None or capability_id is None:
+            raise RuntimeInvariantError("binding_missing_effect_path")
+
         start = self._kernel.start_attempt(authorization.authorization)
         if not start.allowed:
-            return RuntimeTrace(request.request_id, authorization, start)
+            return RuntimeTrace(
+                request_id=request.request_id,
+                authorization=authorization,
+                binding=binding_result,
+                start=start,
+            )
         if start.attempt is None or start.consumed is None or start.started is None:
             raise RuntimeInvariantError("attempt_start_missing_durable_objects")
 
-        admission = self._adapter.admit(
+        admission = adapter.admit(
             start.attempt,
-            self._capability_id,
+            capability_id,
             operation,
         )
         if not admission.allowed:
-            return RuntimeTrace(request.request_id, authorization, start, admission)
+            return RuntimeTrace(
+                request_id=request.request_id,
+                authorization=authorization,
+                binding=binding_result,
+                start=start,
+                admission=admission,
+            )
         if admission.admission is None:
             raise RuntimeInvariantError("admission_missing_durable_object")
 
-        execution = self._adapter.execute(admission.admission.admission_id)
+        execution = adapter.execute(admission.admission.admission_id)
         return RuntimeTrace(
-            request.request_id,
-            authorization,
-            start,
-            admission,
-            execution,
+            request_id=request.request_id,
+            authorization=authorization,
+            binding=binding_result,
+            start=start,
+            admission=admission,
+            execution=execution,
         )
