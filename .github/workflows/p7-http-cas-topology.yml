@@ -148,7 +148,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          bash scripts/run_http_cas_topology.sh p7-evidence/http-cas-topology
+          sudo bash scripts/run_http_cas_topology.sh p7-evidence/http-cas-topology
 
       - name: Hash P7 evidence
         if: always()
