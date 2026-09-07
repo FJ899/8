@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import socket
@@ -187,12 +188,22 @@ class Kernel(G2Kernel):
         except (TypeError, ValueError, UnicodeDecodeError, json.JSONDecodeError, UnicodeError):
             return None, "invalid_admitted_operation", digest
 
-    def _post_provider(self, admission_id: str, digest: str, op: HttpCasOperation, *, fault: str = "") -> dict[str, Any]:
+    def _post_provider(
+        self,
+        admission_id: str,
+        digest: str,
+        op: HttpCasOperation,
+        *,
+        fault: str = "",
+        expected_target_instance_id: Optional[str] = None,
+    ) -> dict[str, Any]:
         payload = {
             "admission_id": admission_id,
             "operation_digest": digest,
             "operation": json.loads(op.canonical_bytes().decode("utf-8")),
         }
+        if expected_target_instance_id is not None:
+            payload["expected_target_instance_id"] = expected_target_instance_id
         headers = {
             "Authorization": "Bearer " + self._provider_token,
             "Content-Type": "application/json",
@@ -209,7 +220,7 @@ class Kernel(G2Kernel):
             with urllib.request.urlopen(req, timeout=self._provider_timeout) as response:
                 return json.loads(response.read(_MAX_BODY).decode("utf-8"))
         except urllib.error.HTTPError as exc:
-            if exc.code == 412:
+            if exc.code in {409, 412}:
                 return json.loads(exc.read(_MAX_BODY).decode("utf-8"))
             raise
 
@@ -248,6 +259,7 @@ class Kernel(G2Kernel):
         admission_id: str,
         *,
         crash_point: Optional[str] = None,
+        expected_target_instance_id: Optional[str] = None,
     ) -> HttpCasExecutionResult:
         c = self._connect()
         try:
@@ -292,13 +304,27 @@ class Kernel(G2Kernel):
             "forged_success_response": "forge_success_without_commit",
         }.get(crash_point or "", "")
         try:
-            receipt = self._post_provider(admission_id, digest, op, fault=fault)
+            receipt = self._post_provider(
+                admission_id,
+                digest,
+                op,
+                fault=fault,
+                expected_target_instance_id=expected_target_instance_id,
+            )
             if crash_point == "duplicate_delivery":
-                second = self._post_provider(admission_id, digest, op)
+                second = self._post_provider(
+                    admission_id,
+                    digest,
+                    op,
+                    expected_target_instance_id=expected_target_instance_id,
+                )
                 if second != receipt:
                     return HttpCasExecutionResult(False, "duplicate_delivery_conflict", op.resource, operation_digest=digest)
         except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, socket.timeout, ConnectionError, OSError, json.JSONDecodeError, UnicodeDecodeError):
             return HttpCasExecutionResult(False, "transport_uncertain", op.resource, operation_digest=digest)
+
+        if receipt.get("error") == "target_instance_mismatch":
+            return HttpCasExecutionResult(False, "target_instance_mismatch", op.resource, operation_digest=digest)
 
         if (
             receipt.get("provider_id") != self.provider_id
@@ -433,12 +459,21 @@ class HttpCasEffectAdapter:
     def execute(self, admission_id: str, *, crash_point: Optional[str] = None) -> HttpCasExecutionResult:
         historical = load_operation_target_binding(self._kernel, admission_id)
         if historical is not None:
+            # Snapshot both route-bearing objects before validation so later
+            # composition changes do not alter the route delegated to execute.
+            bound_kernel = copy.copy(self._kernel)
+            bound_observer = copy.copy(self._observer)
             try:
-                current = self._observer.historical_target_binding(historical.logical_target)
+                current = bound_observer.historical_target_binding(historical.logical_target)
             except Exception:
                 return HttpCasExecutionResult(False, "target_instance_unavailable", historical.logical_target)
             if current != historical:
                 return HttpCasExecutionResult(False, "target_instance_mismatch", historical.logical_target)
+            return bound_kernel.execute_http_cas_admission(
+                admission_id,
+                crash_point=crash_point,
+                expected_target_instance_id=historical.instance_id,
+            )
         return self._kernel.execute_http_cas_admission(admission_id, crash_point=crash_point)
 
     def observe(self, operation: HttpCasOperation, *, covered: bool = True, attribution_ambiguous: bool = False) -> HttpCasObservation:
