@@ -19,6 +19,11 @@ from .g4 import (
     GitTreeOperation,
     Kernel as G4Kernel,
 )
+from .target_instance import (
+    HistoricalTargetBinding,
+    filesystem_target_instance_id,
+    persist_operation_target_binding,
+)
 
 
 @runtime_checkable
@@ -58,14 +63,16 @@ ExecutionT = TypeVar("ExecutionT", bound=EffectExecutionResult)
 
 @runtime_checkable
 class EffectAdapter(Protocol[OperationT, ObservationT, ExecutionT]):
-    """Smallest shared effect-domain seam justified by both G3 and G4.
+    """Smallest shared effect-domain seam justified by G3/G4/HTTP usage.
 
     The seam does not own authority, capability selection, routing, or recovery
-    policy. It only normalizes the already-existing per-domain operations needed
-    by a later trusted runtime.
+    policy. P9-R2 adds only one historical-target hook whose common *shape* is
+    shared while its instance semantics remain domain-specific.
     """
 
     def target_identity(self, operation: OperationT) -> str: ...
+
+    def historical_target_binding(self, operation: OperationT) -> HistoricalTargetBinding: ...
 
     def supported_possible_effects(self, operation: OperationT) -> FrozenSet[str]: ...
 
@@ -120,6 +127,16 @@ class G3EffectAdapter:
     def target_identity(self, operation: PutIfVersionOperation) -> str:
         return operation.resource
 
+    def historical_target_binding(self, operation: PutIfVersionOperation) -> HistoricalTargetBinding:
+        return HistoricalTargetBinding(
+            "g3-sqlite-store",
+            operation.resource,
+            filesystem_target_instance_id(
+                self._kernel.target_db,
+                namespace="g3-sqlite-store",
+            ),
+        )
+
     def supported_possible_effects(self, operation: PutIfVersionOperation) -> FrozenSet[str]:
         return self._kernel.possible_effects_for(operation.resource)
 
@@ -129,7 +146,16 @@ class G3EffectAdapter:
         capability_id: str,
         operation: PutIfVersionOperation,
     ) -> AdmissionResult:
-        return self._kernel.admit_put_if_version(attempt, capability_id, operation)
+        result = self._kernel.admit_put_if_version(attempt, capability_id, operation)
+        if result.allowed:
+            if result.admission is None:
+                raise RuntimeError("allowed_admission_missing_object")
+            persist_operation_target_binding(
+                self._kernel,
+                result.admission.admission_id,
+                self.historical_target_binding(operation),
+            )
+        return result
 
     def execute(
         self,
@@ -190,6 +216,16 @@ class G4EffectAdapter:
     def target_identity(self, operation: GitTreeOperation) -> str:
         return operation.protected_ref
 
+    def historical_target_binding(self, operation: GitTreeOperation) -> HistoricalTargetBinding:
+        return HistoricalTargetBinding(
+            "g4-bare-repository",
+            operation.protected_ref,
+            filesystem_target_instance_id(
+                self._kernel.git_repo.repo,
+                namespace="g4-bare-repository",
+            ),
+        )
+
     def supported_possible_effects(self, operation: GitTreeOperation) -> FrozenSet[str]:
         return self._kernel.required_possible_effects(operation)
 
@@ -199,7 +235,16 @@ class G4EffectAdapter:
         capability_id: str,
         operation: GitTreeOperation,
     ) -> AdmissionResult:
-        return self._kernel.admit_git_operation(attempt, capability_id, operation)
+        result = self._kernel.admit_git_operation(attempt, capability_id, operation)
+        if result.allowed:
+            if result.admission is None:
+                raise RuntimeError("allowed_admission_missing_object")
+            persist_operation_target_binding(
+                self._kernel,
+                result.admission.admission_id,
+                self.historical_target_binding(operation),
+            )
+        return result
 
     def execute(
         self,
