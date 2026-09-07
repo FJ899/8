@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import multiprocessing
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -51,6 +52,7 @@ class HttpCasDomain:
         self.process = multiprocessing.Process(
             target=serve_http_cas_provider,
             args=(self.provider_db, self.provider_token, "provider-local", child),
+            kwargs={"allow_test_faults": True},
             daemon=True,
         )
         self.process.start()
@@ -266,8 +268,8 @@ class HttpCasThirdDomainTests(unittest.TestCase):
         op = d.operation("forged")
         admission = self.admitted(d, op)
         result = d.adapter.execute(admission.admission_id, crash_point="forged_success_response")
-        self.assertTrue(result.occurred, result.reason)
-        self.assertTrue(d.adapter.has_control_completion(admission.admission_id))
+        self.assertEqual((result.occurred, result.reason), (False, "provider_commit_unverified"))
+        self.assertFalse(d.adapter.has_control_completion(admission.admission_id))
         observation = d.adapter.observe(op)
         self.assertFalse(d.adapter.did(admission, observation))
         reconciled = d.reconciler.reconcile(admission, op)
@@ -369,6 +371,59 @@ class HttpCasThirdDomainTests(unittest.TestCase):
         self.assertFalse(hasattr(op, "credential"))
         public_adapter = {name for name in dir(d.adapter) if not name.startswith("_")}
         self.assertTrue({"provider_token", "endpoint", "url", "credential"}.isdisjoint(public_adapter))
+
+    def test_forged_attempt_and_missing_authentication_do_not_gain_http_effect_path(self) -> None:
+        d = self.domain()
+        forged = type(d.attempt)(
+            d.attempt.attempt_id,
+            d.attempt.authorization_id,
+            "mallory",
+            d.attempt.intent_id,
+            d.attempt.contract_id,
+        )
+        denied = d.admit(d.operation("forged"), attempt=forged)
+        self.assertEqual((denied.allowed, denied.reason), (False, "forged_attempt"))
+        unauth = d.kernel.authorize(ActionRequest("request-no-auth", d.intent.intent_id, d.contract.contract_id))
+        self.assertFalse(unauth.allowed)
+        self.assertEqual(read_http_cas_resource_for_test(d.provider_db, "X"), ("initial", 0))
+
+    def test_concurrent_same_expected_version_allows_one_commit_and_one_terminal_rejection(self) -> None:
+        d = self.domain()
+        a1 = self.admitted(d, d.operation("one"))
+        a2 = self.admitted(d, d.operation("two"))
+        barrier = threading.Barrier(3)
+        results = []
+        lock = threading.Lock()
+
+        def run(admission_id: str) -> None:
+            barrier.wait()
+            result = d.adapter.execute(admission_id)
+            with lock:
+                results.append(result)
+
+        t1 = threading.Thread(target=run, args=(a1.admission_id,))
+        t2 = threading.Thread(target=run, args=(a2.admission_id,))
+        t1.start(); t2.start(); barrier.wait(); t1.join(); t2.join()
+        self.assertEqual(sum(r.occurred for r in results), 1)
+        self.assertEqual(sum(r.reason == "provider_rejected_stale" for r in results), 1)
+        self.assertEqual(read_http_cas_resource_for_test(d.provider_db, "X")[1], 1)
+
+    def test_canonicalization_rejects_invalid_resource_without_normalizing_it_into_target(self) -> None:
+        d = self.domain()
+        bad = HttpCasOperation("X/../Y", 0, "bad", d.kernel.possible_effects_for("X/../Y"))
+        denied = d.admit(bad)
+        self.assertEqual((denied.allowed, denied.reason), (False, "invalid_operation"))
+        self.assertEqual(read_http_cas_resource_for_test(d.provider_db, "X"), ("initial", 0))
+
+    def test_canonicalization_preserves_value_bytes_and_distinguishes_semantics(self) -> None:
+        d = self.domain()
+        op1 = d.operation("line one\nline two  ")
+        op2 = d.operation("line one\nline two")
+        self.assertNotEqual(op1.canonical_bytes(), op2.canonical_bytes())
+        self.assertNotEqual(op1.operation_digest, op2.operation_digest)
+        admission = self.admitted(d, op1)
+        self.assertTrue(d.adapter.execute(admission.admission_id).occurred)
+        self.assertEqual(d.adapter.observe(op1).value, "line one\nline two  ")
 
     def test_missing_coverage_and_ambiguous_attribution_remain_indeterminate(self) -> None:
         d = self.domain()
