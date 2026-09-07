@@ -18,8 +18,9 @@ class SwapAfterValidationG3Adapter(G3EffectAdapter):
 
     def _execution_target_binding(self, logical_target: str):
         # First derive the current binding while T1 is still configured. Then
-        # switch the kernel route before the base execute() delegates to the
-        # domain primitive. This isolates the check/use window itself.
+        # switch the original kernel route before base execute() delegates to
+        # its bound route snapshot. This isolates the same check/use window as
+        # the frozen Stage-1 red counterexample.
         binding = super()._execution_target_binding(logical_target)
         self._kernel.target_db = str(self._swap_target)
         self._observer = G3Observer(self._swap_target)
@@ -37,8 +38,9 @@ class P9R4Stage1CheckUseTargetRace(unittest.TestCase):
         self.addCleanup(domain.close)
 
         operation = domain.operation("check-use-target-race")
+        t1 = Path(domain.target_db)
         t2 = Path(domain.tempdir.name) / "check-use-t2.db"
-        self._sqlite_clone(Path(domain.target_db), t2)
+        self._sqlite_clone(t1, t2)
 
         adapter = SwapAfterValidationG3Adapter(domain.kernel, domain.observer, t2)
         admitted = adapter.admit(domain.attempt, domain.capability_id, operation)
@@ -48,20 +50,22 @@ class P9R4Stage1CheckUseTargetRace(unittest.TestCase):
 
         result = adapter.execute(admission_id)
 
-        # Security requirement. On the frozen P9-R3 candidate the adapter's
-        # validation sees T1, the route switches immediately afterwards, and
-        # the domain kernel subsequently opens/mutates T2.
-        self.assertFalse(
-            result.occurred,
-            "target changed after successful instance check and T2 received the historical T1 effect",
-        )
-
+        # Post-repair invariant: the route switch after validation must never
+        # redirect the historical effect to T2. A secure implementation may
+        # either reject or complete against the already-bound T1 route.
+        t1_observation = G3Observer(t1).observe(operation.resource)
         t2_observation = G3Observer(t2).observe(operation.resource)
         self.assertNotEqual(
             t2_observation.admission_id,
             admission_id,
             "substituted T2 contains provenance for the historical T1 admission",
         )
+        if result.occurred:
+            self.assertEqual(
+                t1_observation.admission_id,
+                admission_id,
+                "reported effect did not occur on the validated/bound T1 route",
+            )
 
 
 if __name__ == "__main__":
