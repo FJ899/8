@@ -1,0 +1,68 @@
+name: P9-R6 stage1 HTTP stale-FD reproducer
+
+on:
+  push:
+    branches:
+      - p9-r6-stage1-http-stale-fd-reproducer
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p9-r6-stage1-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  reproduce:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact P9-R6 Stage-1 SHA
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 20
+
+      - name: Bind frozen P9-R5 input
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git merge-base HEAD 2aea14bdadda2995bb857c6b8389b5dcbfb94136)" = "2aea14bdadda2995bb857c6b8389b5dcbfb94136"
+          test "$(git rev-parse 2aea14bdadda2995bb857c6b8389b5dcbfb94136^{tree})" = "f20b277c23343eac398af4b30daf998324dcdd27"
+          mkdir -p p9-r6-stage1-evidence
+          {
+            printf 'GITHUB_SHA=%s\n' "$GITHUB_SHA"
+            printf 'HEAD=%s\n' "$(git rev-parse HEAD)"
+            printf 'TREE=%s\n' "$(git rev-parse HEAD^{tree})"
+            printf 'BASE_HEAD=%s\n' '2aea14bdadda2995bb857c6b8389b5dcbfb94136'
+            printf 'BASE_TREE=%s\n' 'f20b277c23343eac398af4b30daf998324dcdd27'
+            printf 'FINDING=P9-R5-RV-F005\n'
+            printf 'ORIGIN=NEWLY_REVEALED_DURING_BLIND_POST_REPAIR_CONTINUATION\n'
+            printf 'FINDING_BLOB=%s\n' "$(git rev-parse HEAD:research/P9_R6_STAGE1_HTTP_STALE_FD_BINDING_FINDING.md)"
+            printf 'TEST_BLOB=%s\n' "$(git rev-parse HEAD:tests/test_p9_r6_stage1_http_stale_fd_reproducer.py)"
+          } | tee p9-r6-stage1-evidence/execution_instance.txt
+
+      - name: Run expected-red stale-FD counterexample
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_p9_r6_stage1_http_stale_fd_reproducer \
+            2>&1 | tee p9-r6-stage1-evidence/reproducer.log
+
+      - name: Hash evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          find p9-r6-stage1-evidence -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > p9-r6-stage1-evidence/SHA256SUMS
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: p9-r6-stage1-stale-fd-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: p9-r6-stage1-evidence/
+          if-no-files-found: error
+          retention-days: 14
