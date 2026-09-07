@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from typing import Any, FrozenSet, Optional, Protocol, TypeVar, runtime_checkable
 
 from .g1 import ActionAttempt
@@ -70,8 +71,11 @@ class EffectAdapter(Protocol[OperationT, ObservationT, ExecutionT]):
     policy. P9-R2 adds one historical-target hook whose common *shape* is shared
     while its instance semantics remain domain-specific. P9-R3 requires adapter
     execution to enforce that durable binding whenever the admission was created
-    through the historically-bound adapter/runtime path. Legacy raw kernel
-    admissions remain compatible but do not acquire P9-R3 target assurance.
+    through the historically-bound adapter/runtime path. P9-R4 additionally
+    requires the route validated for such an execution to be the route delegated
+    to the domain primitive, rather than resolving mutable composition again.
+    Legacy raw kernel admissions remain compatible but do not acquire these
+    historical target-assurance properties.
     """
 
     def target_identity(self, operation: OperationT) -> str: ...
@@ -179,12 +183,19 @@ class G3EffectAdapter:
     ) -> PutResult:
         historical = load_operation_target_binding(self._kernel, admission_id)
         if historical is not None:
+            # Freeze the route before validation. The validated route is then
+            # delegated through a shallow trusted kernel view even if mutable
+            # composition on the original kernel changes after the check.
+            bound_target_db = self._kernel.target_db
             try:
                 current = self._execution_target_binding(historical.logical_target)
             except (OSError, ValueError):
                 return PutResult(False, "target_instance_unavailable", historical.logical_target)
             if current != historical:
                 return PutResult(False, "target_instance_mismatch", historical.logical_target)
+            bound_kernel = copy.copy(self._kernel)
+            bound_kernel.target_db = bound_target_db
+            return bound_kernel.execute_put_if_version_admission(admission_id, crash_point=crash_point)
         return self._kernel.execute_put_if_version_admission(admission_id, crash_point=crash_point)
 
     def observe(
@@ -286,12 +297,18 @@ class G4EffectAdapter:
     ) -> GitExecutionResult:
         historical = load_operation_target_binding(self._kernel, admission_id)
         if historical is not None:
+            bound_git_repo = copy.copy(self._kernel.git_repo)
+            bound_protected_ref = self._kernel.protected_ref
             try:
                 current = self._execution_target_binding(historical.logical_target)
             except (OSError, ValueError):
-                return GitExecutionResult(False, "target_instance_unavailable", self._kernel.protected_ref)
+                return GitExecutionResult(False, "target_instance_unavailable", bound_protected_ref)
             if current != historical:
-                return GitExecutionResult(False, "target_instance_mismatch", self._kernel.protected_ref)
+                return GitExecutionResult(False, "target_instance_mismatch", bound_protected_ref)
+            bound_kernel = copy.copy(self._kernel)
+            bound_kernel.git_repo = bound_git_repo
+            bound_kernel.protected_ref = bound_protected_ref
+            return bound_kernel.execute_git_admission(admission_id, crash_point=crash_point)
         return self._kernel.execute_git_admission(admission_id, crash_point=crash_point)
 
     def observe(
