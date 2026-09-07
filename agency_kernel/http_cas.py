@@ -20,7 +20,11 @@ from .http_cas_types import (
     decode_http_operation_payload,
     validate_loopback_endpoint,
 )
-from .target_instance import HistoricalTargetBinding, persist_operation_target_binding
+from .target_instance import (
+    HistoricalTargetBinding,
+    load_operation_target_binding,
+    persist_operation_target_binding,
+)
 
 _MAX_BODY = 65536
 
@@ -427,6 +431,15 @@ class HttpCasEffectAdapter:
         return result
 
     def execute(self, admission_id: str, *, crash_point: Optional[str] = None) -> HttpCasExecutionResult:
+        historical = load_operation_target_binding(self._kernel, admission_id)
+        if historical is None:
+            return HttpCasExecutionResult(False, "target_binding_absent", "")
+        try:
+            current = self._observer.historical_target_binding(historical.logical_target)
+        except Exception:
+            return HttpCasExecutionResult(False, "target_instance_unavailable", historical.logical_target)
+        if current != historical:
+            return HttpCasExecutionResult(False, "target_instance_mismatch", historical.logical_target)
         return self._kernel.execute_http_cas_admission(admission_id, crash_point=crash_point)
 
     def observe(self, operation: HttpCasOperation, *, covered: bool = True, attribution_ambiguous: bool = False) -> HttpCasObservation:
