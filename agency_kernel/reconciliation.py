@@ -28,12 +28,7 @@ class ReconciliationStatus(str, Enum):
 
 @dataclass(frozen=True)
 class ReconciliationResult(Generic[ObservationT]):
-    """Stage-local reconciliation fact.
-
-    observation may be absent when control/operation binding fails before the
-    target is read.  There is intentionally no PASS, authorized, within_scope,
-    satisfied, accepted, or retry field.
-    """
+    """Stage-local reconciliation fact with no aggregate security verdict."""
 
     status: ReconciliationStatus
     reason: str
@@ -44,14 +39,21 @@ class ReconciliationResult(Generic[ObservationT]):
 class ReconciliationAdapter(Protocol[OperationT, ObservationT]):
     """Read-only reconciliation projection for one effect domain.
 
-    Implementations may read the trusted control ledger, observe the target, and
-    establish attribution.  They do not admit operations, execute effects,
-    select capabilities, retry effects, or create authority.
+    A terminal_not_occurred proof must mean that this exact admission can no
+    longer produce the protected effect.  A mere observation that execution has
+    not started yet is not such a proof.
     """
 
     def admission_matches_ledger(self, admission: OperationAdmission) -> bool: ...
 
     def execution_started(self, admission_id: str) -> bool: ...
+
+    def terminal_not_occurred(
+        self,
+        admission: OperationAdmission,
+        operation: OperationT,
+        observation: ObservationT,
+    ) -> bool: ...
 
     def observe(
         self,
@@ -95,6 +97,17 @@ class G3ReconciliationAdapter:
                 "SELECT 1 FROM operation_admission_executions WHERE admission_id = ?",
                 (admission_id,),
             ).fetchone() is not None
+
+    def terminal_not_occurred(
+        self,
+        admission: OperationAdmission,
+        operation: PutIfVersionOperation,
+        observation: G3Observation,
+    ) -> bool:
+        # G3 has no durable terminal no-effect record.  An unstarted admission
+        # remains executable, while a started-but-unattributed admission may
+        # have crashed before or after the target boundary.
+        return False
 
     def observe(
         self,
@@ -145,6 +158,17 @@ class G4ReconciliationAdapter:
                 (admission_id,),
             ).fetchone() is not None
 
+    def terminal_not_occurred(
+        self,
+        admission: OperationAdmission,
+        operation: GitTreeOperation,
+        observation: GitObservation,
+    ) -> bool:
+        # G4 likewise has no durable terminal no-effect record.  An unchanged
+        # ref is not historical proof: the admission may still be executable or
+        # an already-started execution may have an uncertain outcome.
+        return False
+
     def observe(
         self,
         operation: GitTreeOperation,
@@ -166,15 +190,14 @@ class G4ReconciliationAdapter:
 class Reconciler(Generic[OperationT, ObservationT]):
     """Read-only, no-retry reconciliation of one exact admission.
 
-    OCCURRED requires both a durable execution-start fact and target-side
-    attribution.  NOT_OCCURRED is deliberately narrower: it requires a durable
-    exact admission for which execution never started.  Once execution has
-    started, an unattributed or unchanged target is insufficient to prove
-    historical non-occurrence and therefore remains INDETERMINATE.
+    OCCURRED requires a durable execution-start fact plus target-side
+    attribution.  NOT_OCCURRED requires a domain-specific *terminal* durable
+    proof that the exact admission cannot produce the effect now or later.
 
-    The API intentionally accepts no execution-result object.  Existing G3/G4
-    execution results are constructible dataclasses and are not provenance-
-    authenticated evidence; accepting them would permit forged NOT_OCCURRED.
+    Current G3/G4 do not possess such a terminal no-effect marker, so their
+    non-attributed cases are deliberately INDETERMINATE.  The API also accepts
+    no execution-result object because those result dataclasses are
+    constructible and are not provenance-authenticated evidence.
     """
 
     __slots__ = ("_adapter",)
@@ -204,8 +227,6 @@ class Reconciler(Generic[OperationT, ObservationT]):
                 "control_evidence_unavailable",
             )
 
-        # Never observe a caller-supplied replacement operation under an
-        # admission for different canonical bytes.
         try:
             canonical = operation.canonical_bytes()
             operation_digest = operation.operation_digest
@@ -214,10 +235,7 @@ class Reconciler(Generic[OperationT, ObservationT]):
                 ReconciliationStatus.INDETERMINATE,
                 "invalid_operation_for_reconciliation",
             )
-        if (
-            operation_digest != admission.operation_digest
-            or canonical != admission.canonical_operation
-        ):
+        if operation_digest != admission.operation_digest or canonical != admission.canonical_operation:
             return ReconciliationResult(
                 ReconciliationStatus.INDETERMINATE,
                 "admission_operation_mismatch",
@@ -258,7 +276,6 @@ class Reconciler(Generic[OperationT, ObservationT]):
             )
 
         attributed = self._adapter.did(admission, observation)
-
         if attributed and not started:
             return ReconciliationResult(
                 ReconciliationStatus.INDETERMINATE,
@@ -271,10 +288,29 @@ class Reconciler(Generic[OperationT, ObservationT]):
                 "attributed_target_effect",
                 observation,
             )
-        if not started:
+
+        try:
+            terminal_no_effect = self._adapter.terminal_not_occurred(
+                admission,
+                operation,
+                observation,
+            )
+        except Exception:
+            return ReconciliationResult(
+                ReconciliationStatus.INDETERMINATE,
+                "terminal_proof_unavailable",
+                observation,
+            )
+        if terminal_no_effect:
             return ReconciliationResult(
                 ReconciliationStatus.NOT_OCCURRED,
-                "execution_never_started",
+                "terminal_nonoccurrence_proof",
+                observation,
+            )
+        if not started:
+            return ReconciliationResult(
+                ReconciliationStatus.INDETERMINATE,
+                "execution_not_started_but_still_executable",
                 observation,
             )
         return ReconciliationResult(
