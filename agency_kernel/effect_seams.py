@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any, FrozenSet, Optional, Protocol, TypeVar, runtime_checkable
 
 from .g1 import ActionAttempt
@@ -57,6 +56,7 @@ ObservationT = TypeVar("ObservationT", bound=EffectObservation)
 ExecutionT = TypeVar("ExecutionT", bound=EffectExecutionResult)
 
 
+@runtime_checkable
 class EffectAdapter(Protocol[OperationT, ObservationT, ExecutionT]):
     """Smallest shared effect-domain seam justified by both G3 and G4.
 
@@ -108,18 +108,20 @@ class EffectAdapter(Protocol[OperationT, ObservationT, ExecutionT]):
     def has_control_completion(self, admission_id: str) -> bool: ...
 
 
-@dataclass(frozen=True)
 class G3EffectAdapter:
     """Thin delegating seam over the existing G3 versioned-store domain."""
 
-    kernel: G3Kernel
-    observer: G3Observer
+    __slots__ = ("_kernel", "_observer")
+
+    def __init__(self, kernel: G3Kernel, observer: G3Observer) -> None:
+        self._kernel = kernel
+        self._observer = observer
 
     def target_identity(self, operation: PutIfVersionOperation) -> str:
         return operation.resource
 
     def supported_possible_effects(self, operation: PutIfVersionOperation) -> FrozenSet[str]:
-        return self.kernel.possible_effects_for(operation.resource)
+        return self._kernel.possible_effects_for(operation.resource)
 
     def admit(
         self,
@@ -127,7 +129,7 @@ class G3EffectAdapter:
         capability_id: str,
         operation: PutIfVersionOperation,
     ) -> AdmissionResult:
-        return self.kernel.admit_put_if_version(attempt, capability_id, operation)
+        return self._kernel.admit_put_if_version(attempt, capability_id, operation)
 
     def execute(
         self,
@@ -135,7 +137,7 @@ class G3EffectAdapter:
         *,
         crash_point: Optional[str] = None,
     ) -> PutResult:
-        return self.kernel.execute_put_if_version_admission(admission_id, crash_point=crash_point)
+        return self._kernel.execute_put_if_version_admission(admission_id, crash_point=crash_point)
 
     def observe(
         self,
@@ -144,14 +146,14 @@ class G3EffectAdapter:
         covered: bool = True,
         attribution_ambiguous: bool = False,
     ) -> G3Observation:
-        return self.observer.observe(
+        return self._observer.observe(
             operation.resource,
             covered=covered,
             attribution_ambiguous=attribution_ambiguous,
         )
 
     def did(self, admission: OperationAdmission, observation: G3Observation) -> bool:
-        return self.kernel.did(admission, observation)
+        return self._kernel.did(admission, observation)
 
     def assess_compliance(
         self,
@@ -160,34 +162,36 @@ class G3EffectAdapter:
         *,
         supported_possible_effects: FrozenSet[str],
     ) -> ComplianceResult:
-        return self.kernel.assess_compliance(
+        return self._kernel.assess_compliance(
             admission,
             observation,
             supported_possible_effects=supported_possible_effects,
         )
 
     def within_scope(self, compliance: ComplianceResult) -> bool:
-        return self.kernel.within_scope(compliance)
+        return self._kernel.within_scope(compliance)
 
     def satisfied(self, observation: G3Observation, expected: Any) -> bool:
-        return self.kernel.satisfied(observation, expected)
+        return self._kernel.satisfied(observation, expected)
 
     def has_control_completion(self, admission_id: str) -> bool:
-        return self.kernel.has_control_completion(admission_id)
+        return self._kernel.has_control_completion(admission_id)
 
 
-@dataclass(frozen=True)
 class G4EffectAdapter:
     """Thin delegating seam over the existing G4 sanitized-Git domain."""
 
-    kernel: G4Kernel
-    observer: GitObserver
+    __slots__ = ("_kernel", "_observer")
+
+    def __init__(self, kernel: G4Kernel, observer: GitObserver) -> None:
+        self._kernel = kernel
+        self._observer = observer
 
     def target_identity(self, operation: GitTreeOperation) -> str:
         return operation.protected_ref
 
     def supported_possible_effects(self, operation: GitTreeOperation) -> FrozenSet[str]:
-        return self.kernel.required_possible_effects(operation)
+        return self._kernel.required_possible_effects(operation)
 
     def admit(
         self,
@@ -195,7 +199,7 @@ class G4EffectAdapter:
         capability_id: str,
         operation: GitTreeOperation,
     ) -> AdmissionResult:
-        return self.kernel.admit_git_operation(attempt, capability_id, operation)
+        return self._kernel.admit_git_operation(attempt, capability_id, operation)
 
     def execute(
         self,
@@ -203,7 +207,7 @@ class G4EffectAdapter:
         *,
         crash_point: Optional[str] = None,
     ) -> GitExecutionResult:
-        return self.kernel.execute_git_admission(admission_id, crash_point=crash_point)
+        return self._kernel.execute_git_admission(admission_id, crash_point=crash_point)
 
     def observe(
         self,
@@ -212,15 +216,15 @@ class G4EffectAdapter:
         covered: bool = True,
         attribution_ambiguous: bool = False,
     ) -> GitObservation:
-        if operation.protected_ref != self.kernel.protected_ref:
+        if operation.protected_ref != self._kernel.protected_ref:
             raise ValueError("operation_target_mismatch")
-        return self.observer.observe(
+        return self._observer.observe(
             covered=covered,
             attribution_ambiguous=attribution_ambiguous,
         )
 
     def did(self, admission: OperationAdmission, observation: GitObservation) -> bool:
-        return self.kernel.did(admission, observation)
+        return self._kernel.did(admission, observation)
 
     def assess_compliance(
         self,
@@ -229,17 +233,17 @@ class G4EffectAdapter:
         *,
         supported_possible_effects: FrozenSet[str],
     ) -> ComplianceResult:
-        return self.kernel.assess_compliance(
+        return self._kernel.assess_compliance(
             admission,
             observation,
             supported_possible_effects=supported_possible_effects,
         )
 
     def within_scope(self, compliance: ComplianceResult) -> bool:
-        return self.kernel.within_scope(compliance)
+        return self._kernel.within_scope(compliance)
 
     def satisfied(self, observation: GitObservation, expected: Any) -> bool:
-        return self.kernel.satisfied(observation, expected)
+        return self._kernel.satisfied(observation, expected)
 
     def has_control_completion(self, admission_id: str) -> bool:
-        return self.kernel.has_control_completion(admission_id)
+        return self._kernel.has_control_completion(admission_id)
