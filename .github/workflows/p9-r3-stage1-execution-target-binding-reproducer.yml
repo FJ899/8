@@ -1,0 +1,63 @@
+name: P9-R3 stage1 execution target-binding reproducer
+
+on:
+  push:
+    branches:
+      - p9-r3-stage1-execution-target-binding-reproducer
+
+permissions:
+  contents: read
+
+jobs:
+  reproduce:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Checkout exact P9-R3 Stage-1 candidate
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 1
+
+      - name: Bind execution instance
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          mkdir -p p9-r3-stage1-evidence
+          {
+            printf 'GITHUB_REPOSITORY=%s\n' "$GITHUB_REPOSITORY"
+            printf 'GITHUB_SHA=%s\n' "$GITHUB_SHA"
+            printf 'GITHUB_RUN_ID=%s\n' "$GITHUB_RUN_ID"
+            printf 'GITHUB_RUN_ATTEMPT=%s\n' "$GITHUB_RUN_ATTEMPT"
+            printf 'HEAD=%s\n' "$(git rev-parse HEAD)"
+            printf 'TREE=%s\n' "$(git rev-parse HEAD^{tree})"
+            printf 'P9_R2_BASE_HEAD=%s\n' 'd1e1442fcd932690c99e0429794b17416d297eb3'
+            printf 'P9_R2_BASE_TREE=%s\n' '668a61b8f5687537e201658289875edd2261aba8'
+            printf 'FINDING=P9-R2-RV-F002\n'
+            printf 'ORIGIN=NEWLY_REVEALED_DURING_BLIND_POST_REPAIR_CONTINUATION\n'
+          } | tee p9-r3-stage1-evidence/execution_instance.txt
+
+      - name: Run expected-red execution-time target-binding reproducer
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_p9_r3_stage1_execution_target_binding_reproducer \
+            2>&1 | tee p9-r3-stage1-evidence/reproducer.log
+
+      - name: Hash evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          find p9-r3-stage1-evidence -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > p9-r3-stage1-evidence/SHA256SUMS
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: p9-r3-stage1-execution-target-binding-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: p9-r3-stage1-evidence/
+          if-no-files-found: error
+          retention-days: 14
