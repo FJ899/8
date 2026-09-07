@@ -59,7 +59,7 @@ class Kernel(G2Kernel):
 
     @staticmethod
     def possible_effects_for(resource: str) -> FrozenSet[str]:
-        return frozenset({f"MODIFY({resource})", f"PROVIDER_RECEIPT({resource})"})
+        return frozenset({f"MODIFY({resource})", f"PROVENANCE({resource})"})
 
     def has_control_completion(self, admission_id: str) -> bool:
         with self._connect() as c:
@@ -208,6 +208,36 @@ class Kernel(G2Kernel):
                 return json.loads(exc.read(_MAX_BODY).decode("utf-8"))
             raise
 
+    def _provider_commit_is_observed(
+        self,
+        admission_id: str,
+        digest: str,
+        op: HttpCasOperation,
+        mutation_id: str,
+        after_version: int,
+    ) -> bool:
+        try:
+            observer = HttpCasObserver(
+                self._provider_endpoint,
+                self._provider_token,
+                self.provider_id,
+                timeout=max(self._provider_timeout, 0.25),
+            )
+            observation = observer.observe(op.resource)
+        except Exception:
+            return False
+        return (
+            observation.admission_id == admission_id
+            and observation.operation_digest == digest
+            and observation.mutation_id == mutation_id
+            and observation.value == op.new_value
+            and observation.version == after_version
+            and observation.receipt_status == "committed"
+            and observation.receipt_mutation_id == mutation_id
+            and observation.receipt_after_version == after_version
+            and observation.receipt_value == op.new_value
+        )
+
     def execute_http_cas_admission(
         self,
         admission_id: str,
@@ -291,6 +321,18 @@ class Kernel(G2Kernel):
             return HttpCasExecutionResult(False, "provider_response_invalid", op.resource, operation_digest=digest)
 
         mutation_id = str(receipt["mutation_id"])
+        after_version = int(receipt["after_version"])
+        if not self._provider_commit_is_observed(admission_id, digest, op, mutation_id, after_version):
+            return HttpCasExecutionResult(
+                False,
+                "provider_commit_unverified",
+                op.resource,
+                digest,
+                status,
+                mutation_id,
+                int(receipt["before_version"]),
+                after_version,
+            )
         with self._connect() as c:
             c.execute(
                 "INSERT INTO http_cas_execution_completions(admission_id, mutation_id, completed_at) VALUES (?, ?, ?)",
@@ -304,7 +346,7 @@ class Kernel(G2Kernel):
             status,
             mutation_id,
             int(receipt["before_version"]),
-            int(receipt["after_version"]),
+            after_version,
         )
 
     def did(self, admission: OperationAdmission, observation: HttpCasObservation) -> bool:
