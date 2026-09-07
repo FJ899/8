@@ -252,7 +252,7 @@ def _apply_provider_cas(path: str | Path, admission_id: str, operation_digest: s
         c.close()
 
 
-def _make_handler(path: str | Path, token: str):
+def _make_handler(path: str | Path, token: str, allow_test_faults: bool):
     db_path = str(path)
     expected_token = token.encode("utf-8")
 
@@ -305,7 +305,7 @@ def _make_handler(path: str | Path, token: str):
                 self._json(400, {"error": "invalid_request"})
                 return
 
-            fault = self.headers.get("X-Agency-Kernel-Test-Fault", "")
+            fault = self.headers.get("X-Agency-Kernel-Test-Fault", "") if allow_test_faults else ""
             if fault == "delay_before_commit":
                 time.sleep(0.35)
             if fault == "drop_before_decision":
@@ -409,11 +409,22 @@ def _make_handler(path: str | Path, token: str):
     return Handler
 
 
-def serve_http_cas_provider(path: str | Path, token: str, provider_id: str, ready_connection=None, *, host: str = "127.0.0.1", port: int = 0) -> None:
+def serve_http_cas_provider(
+    path: str | Path,
+    token: str,
+    provider_id: str,
+    ready_connection=None,
+    *,
+    host: str = "127.0.0.1",
+    port: int = 0,
+    allow_test_faults: bool = False,
+) -> None:
     if not isinstance(token, str) or not token:
         raise ValueError("invalid_provider_token")
+    if host not in {"127.0.0.1", "localhost"}:
+        raise ValueError("provider_host_must_be_loopback")
     initialize_http_cas_provider(path, provider_id)
-    server = ThreadingHTTPServer((host, port), _make_handler(path, token))
+    server = ThreadingHTTPServer((host, port), _make_handler(path, token, allow_test_faults))
     if ready_connection is not None:
         ready_connection.send(int(server.server_address[1]))
         ready_connection.close()
