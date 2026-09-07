@@ -230,11 +230,21 @@ class HttpCasEvidenceProducer:
     ) -> Optional[DomainEvidenceReference]:
         if not isinstance(observation, HttpCasObservation):
             raise TypeError("http_observation_type_mismatch")
-        if observation.receipt_status is not None:
+
+        try:
+            receipt = self._adapter._observer.receipt(admission.admission_id)
+        except Exception:
+            receipt = None
+        if receipt is not None and (
+            receipt.provider_id == observation.provider_id
+            and receipt.admission_id == admission.admission_id
+            and receipt.operation_digest == admission.operation_digest
+            and receipt.resource == observation.resource
+        ):
             return DomainEvidenceReference(
                 "http_provider_receipt",
-                admission.admission_id,
-                observation.provider_id,
+                receipt.admission_id,
+                receipt.provider_id,
             )
         if observation.mutation_id is not None:
             return DomainEvidenceReference(
