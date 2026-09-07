@@ -1,0 +1,74 @@
+name: P9-R2 stage1 RV-F001 reproducer
+
+on:
+  push:
+    branches:
+      - p9-r2-stage1-rv-f001-reproducer
+
+permissions:
+  contents: read
+
+concurrency:
+  group: p9-r2-stage1-rv-f001-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  reproduce:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact Stage-1 candidate
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+          fetch-depth: 20
+
+      - name: Bind frozen base and Stage-1 execution identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          test "$(git merge-base HEAD a482fd2bda8413c47a239eb6339582bf3bbc200d)" = "a482fd2bda8413c47a239eb6339582bf3bbc200d"
+          test "$(git rev-parse a482fd2bda8413c47a239eb6339582bf3bbc200d^{tree})" = "ae2e534b8ad2a5b313e301d64c474dbae00a6160"
+          mkdir -p p9-r2-stage1-evidence
+          {
+            printf 'GITHUB_REPOSITORY=%s\n' "$GITHUB_REPOSITORY"
+            printf 'GITHUB_SHA=%s\n' "$GITHUB_SHA"
+            printf 'GITHUB_RUN_ID=%s\n' "$GITHUB_RUN_ID"
+            printf 'GITHUB_RUN_ATTEMPT=%s\n' "$GITHUB_RUN_ATTEMPT"
+            printf 'HEAD=%s\n' "$(git rev-parse HEAD)"
+            printf 'TREE=%s\n' "$(git rev-parse HEAD^{tree})"
+            printf 'BASE_HEAD=%s\n' 'a482fd2bda8413c47a239eb6339582bf3bbc200d'
+            printf 'BASE_TREE=%s\n' 'ae2e534b8ad2a5b313e301d64c474dbae00a6160'
+            printf 'FINDING=P9-R1-RV-F001\n'
+            printf 'ORIGIN=NEWLY_REVEALED_DURING_POST_REPAIR_REVIEW\n'
+            printf 'FINDING_BLOB=%s\n' "$(git rev-parse HEAD:research/P9_R2_STAGE1_RV_F001_FINDING.md)"
+            printf 'REPRODUCER_BLOB=%s\n' "$(git rev-parse HEAD:tests/test_p9_r2_stage1_rv_f001_reproducer.py)"
+            printf 'EVIDENCE_BLOB=%s\n' "$(git rev-parse HEAD:agency_kernel/evidence.py)"
+            printf 'G3_BLOB=%s\n' "$(git rev-parse HEAD:agency_kernel/g3.py)"
+            printf 'EFFECT_SEAMS_BLOB=%s\n' "$(git rev-parse HEAD:agency_kernel/effect_seams.py)"
+          } | tee p9-r2-stage1-evidence/execution_instance.txt
+
+      - name: Execute expected-red T1-to-T2 counterexample
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest -v tests.test_p9_r2_stage1_rv_f001_reproducer \
+            2>&1 | tee p9-r2-stage1-evidence/reproducer.log
+
+      - name: Hash Stage-1 evidence
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          find p9-r2-stage1-evidence -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > p9-r2-stage1-evidence/SHA256SUMS
+
+      - name: Upload Stage-1 evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: p9-r2-stage1-rv-f001-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: p9-r2-stage1-evidence/
+          if-no-files-found: error
+          retention-days: 14
