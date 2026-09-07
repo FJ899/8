@@ -43,6 +43,8 @@ jobs:
             printf 'WORKFLOW_BLOB=%s\n' "$(git rev-parse HEAD:.github/workflows/p9-r2-target-instance-provenance.yml)"
             printf 'FINDING_BLOB=%s\n' "$(git rev-parse HEAD:research/P9_R2_TARGET_INSTANCE_PROVENANCE_FINDING.md)"
             printf 'P9_R2_TEST_BLOB=%s\n' "$(git rev-parse HEAD:tests/test_p9_r2_target_instance_provenance.py)"
+            printf 'TARGET_INSTANCE_BLOB=%s\n' "$(git rev-parse HEAD:agency_kernel/target_instance.py)"
+            printf 'EFFECT_SEAMS_BLOB=%s\n' "$(git rev-parse HEAD:agency_kernel/effect_seams.py)"
             printf 'EVIDENCE_BLOB=%s\n' "$(git rev-parse HEAD:agency_kernel/evidence.py)"
             printf 'G3_BLOB=%s\n' "$(git rev-parse HEAD:agency_kernel/g3.py)"
             printf 'G4_BLOB=%s\n' "$(git rev-parse HEAD:agency_kernel/g4.py)"
@@ -52,7 +54,7 @@ jobs:
             printf 'GIT=%s\n' "$(git --version)"
           } | tee p9-r2-evidence/execution_instance.txt
 
-      - name: Run P9-R2 Gate A/B target-instance tests
+      - name: Run P9-R2 Gate A/B/C target-instance tests
         shell: bash
         run: |
           set -euo pipefail
