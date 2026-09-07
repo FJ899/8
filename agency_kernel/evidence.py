@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import sqlite3
 from dataclasses import asdict, dataclass, is_dataclass
 from typing import Optional
 
@@ -19,6 +20,7 @@ from .reconciliation import (
     ReconciliationStatus,
 )
 from .runtime import RuntimeTrace
+from .target_instance import HistoricalTargetBinding
 
 
 @dataclass(frozen=True)
@@ -61,6 +63,11 @@ class EffectEvidence:
     as a historical control-ledger event. Emitting that identifier as historical
     evidence would therefore invent provenance.
 
+    P9-R2 adds only the durable historical target-instance reference required to
+    distinguish a logical resource/ref from the concrete store/repository/provider
+    instance that was bound before execution. The `kind` names domain semantics;
+    the opaque instance identifier must not be interpreted across domains.
+
     Also deliberately absent: aggregate success/PASS, authorization truth, DID,
     WITHIN_SCOPE, SATISFIED, compliance, or acceptance fields. The object binds
     durable identities and current read-only evidence so later logic can derive
@@ -75,6 +82,8 @@ class EffectEvidence:
     operation_digest: str
     capability_id: str
     target_identity: str
+    target_instance_kind: str
+    target_instance_id: str
     domain_evidence: Optional[DomainEvidenceReference]
     observation: Optional[ObservationReference]
     reconciliation: ReconciliationReference
@@ -91,6 +100,7 @@ class _DurableLineage:
     attempt_id: str
     admission: OperationAdmission
     capability_resource: str
+    target_binding: HistoricalTargetBinding
 
 
 def _observation_digest(kind: str, observation) -> str:
@@ -134,6 +144,9 @@ class G3EvidenceProducer:
 
     def target_identity(self, operation) -> str:
         return self._adapter.target_identity(operation)
+
+    def historical_target_binding(self, operation) -> HistoricalTargetBinding:
+        return self._adapter.historical_target_binding(operation)
 
     def reconcile(self, admission: OperationAdmission, operation) -> ReconciliationResult:
         return self._reconciler.reconcile(admission, operation)
@@ -188,6 +201,9 @@ class G4EvidenceProducer:
     def target_identity(self, operation) -> str:
         return self._adapter.target_identity(operation)
 
+    def historical_target_binding(self, operation) -> HistoricalTargetBinding:
+        return self._adapter.historical_target_binding(operation)
+
     def reconcile(self, admission: OperationAdmission, operation) -> ReconciliationResult:
         return self._reconciler.reconcile(admission, operation)
 
@@ -240,6 +256,9 @@ class HttpCasEvidenceProducer:
 
     def target_identity(self, operation) -> str:
         return self._adapter.target_identity(operation)
+
+    def historical_target_binding(self, operation) -> HistoricalTargetBinding:
+        return self._adapter.historical_target_binding(operation)
 
     def reconcile(self, admission: OperationAdmission, operation) -> ReconciliationResult:
         return self._reconciler.reconcile(admission, operation)
@@ -294,7 +313,8 @@ class EffectEvidenceCollector:
 
     `collect_from_admission_id(admission_id, operation)` is the crash/restart
     path. It requires no transient RuntimeTrace and never calls execute/admit or
-    retries an effect.
+    retries an effect. P9-R2 additionally requires the reconstruction to point
+    at the same concrete historical target instance recorded for the admission.
     """
 
     __slots__ = ("_producer",)
@@ -318,6 +338,14 @@ class EffectEvidenceCollector:
             raise RuntimeError("evidence_control_ledger_unavailable") from exc
 
         try:
+            binding_table = connection.execute(
+                """
+                SELECT 1 FROM sqlite_master
+                WHERE type = 'table' AND name = 'operation_target_bindings'
+                """
+            ).fetchone()
+            if binding_table is None:
+                raise ValueError("durable_target_binding_absent")
             row = connection.execute(
                 """
                 SELECT
@@ -339,7 +367,10 @@ class EffectEvidenceCollector:
                     aa.contract_id AS authorization_contract_id,
                     ac.authorization_id AS consumed_authorization_id,
                     ac.attempt_id AS consumed_attempt_id,
-                    s.attempt_id AS started_attempt_id
+                    s.attempt_id AS started_attempt_id,
+                    tb.target_kind,
+                    tb.logical_target AS historical_logical_target,
+                    tb.target_instance_id
                 FROM operation_admissions AS oa
                 JOIN capabilities AS cap
                   ON cap.capability_id = oa.capability_id
@@ -359,21 +390,36 @@ class EffectEvidenceCollector:
                   ON ag.grant_id = aa.grant_id
                  AND ag.principal_id = aa.principal_id
                  AND ag.intent_id = aa.intent_id
+                LEFT JOIN operation_target_bindings AS tb
+                  ON tb.admission_id = oa.admission_id
                 WHERE oa.admission_id = ?
                 """,
                 (admission_id,),
             ).fetchone()
+        except sqlite3.Error as exc:
+            raise RuntimeError("evidence_control_ledger_unavailable") from exc
         finally:
             connection.close()
 
         if row is None:
             raise ValueError("durable_admission_lineage_absent")
 
+        target_kind = row["target_kind"]
+        historical_logical_target = row["historical_logical_target"]
+        target_instance_id = row["target_instance_id"]
+        if (
+            target_kind is None
+            or historical_logical_target is None
+            or target_instance_id is None
+        ):
+            raise ValueError("durable_target_binding_absent")
+
         attempt_id = str(row["admission_attempt_id"])
         authorization_id = str(row["authorization_id"])
         principal_id = str(row["authorization_principal_id"])
         intent_id = str(row["authorization_intent_id"])
         contract_id = str(row["authorization_contract_id"])
+        capability_resource = str(row["capability_resource"])
         if (
             str(row["attempt_authorization_id"]) != authorization_id
             or str(row["attempt_principal_id"]) != principal_id
@@ -382,6 +428,7 @@ class EffectEvidenceCollector:
             or str(row["consumed_authorization_id"]) != authorization_id
             or str(row["consumed_attempt_id"]) != attempt_id
             or str(row["started_attempt_id"]) != attempt_id
+            or str(historical_logical_target) != capability_resource
         ):
             raise RuntimeError("durable_effect_lineage_inconsistent")
 
@@ -398,6 +445,11 @@ class EffectEvidenceCollector:
             str(row["operation_digest"]),
             canonical,
         )
+        target_binding = HistoricalTargetBinding(
+            str(target_kind),
+            str(historical_logical_target),
+            str(target_instance_id),
+        )
         return _DurableLineage(
             request_id=str(row["request_id"]),
             authorization_id=authorization_id,
@@ -407,7 +459,8 @@ class EffectEvidenceCollector:
             contract_id=contract_id,
             attempt_id=attempt_id,
             admission=admission,
-            capability_resource=str(row["capability_resource"]),
+            capability_resource=capability_resource,
+            target_binding=target_binding,
         )
 
     def _validate_operation(self, lineage: _DurableLineage, operation) -> str:
@@ -426,6 +479,15 @@ class EffectEvidenceCollector:
             raise ValueError("admission_operation_mismatch")
         if target_identity != lineage.capability_resource:
             raise ValueError("evidence_target_mismatch")
+
+        try:
+            current_binding = self._producer.historical_target_binding(operation)
+        except Exception as exc:
+            raise ValueError("target_instance_unavailable") from exc
+        if current_binding.logical_target != target_identity:
+            raise ValueError("target_instance_logical_target_mismatch")
+        if current_binding != lineage.target_binding:
+            raise ValueError("target_instance_mismatch")
         return target_identity
 
     def _collect_durable(
@@ -460,6 +522,8 @@ class EffectEvidenceCollector:
             operation_digest=admission.operation_digest,
             capability_id=admission.capability_id,
             target_identity=target_identity,
+            target_instance_kind=lineage.target_binding.kind,
+            target_instance_id=lineage.target_binding.instance_id,
             domain_evidence=domain_ref,
             observation=observation_ref,
             reconciliation=reconciliation_ref,
