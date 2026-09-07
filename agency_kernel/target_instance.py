@@ -78,3 +78,22 @@ def record_operation_target_binding(
             binding.instance_id,
         ),
     )
+
+
+def persist_operation_target_binding(
+    kernel,
+    admission_id: str,
+    binding: HistoricalTargetBinding,
+) -> None:
+    """Persist one historical target binding before trusted runtime execution proceeds.
+
+    The binding write is intentionally separate from the older domain admission
+    transaction. A crash before this write leaves an admission with no historical
+    target proof; evidence recovery must then fail closed rather than inventing
+    provenance. A successful EffectAdapter admission returns only after this
+    record exists.
+    """
+
+    with kernel._connect() as connection:
+        ensure_operation_target_binding_schema(connection)
+        record_operation_target_binding(connection, admission_id, binding)
