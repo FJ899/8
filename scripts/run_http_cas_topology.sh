@@ -274,25 +274,25 @@ done
 
 # Loopback endpoint is discoverable/reachable, but without the capability credential it is not effect-capable.
 set +e
-run_as p7requester curl -sS -o "$OUT/requester_direct_provider_noauth.body" -w '%{http_code}\n' \
+run_as p7requester curl -sS -w '\n%{http_code}\n' \
   -X POST "$PROVIDER_ENDPOINT/cas" -H 'Content-Type: application/json' --data '{}' \
-  > "$OUT/requester_direct_provider_noauth.status" 2> "$OUT/requester_direct_provider_noauth.stderr"
+  > "$OUT/requester_direct_provider_noauth.response" 2> "$OUT/requester_direct_provider_noauth.stderr"
 REQUESTER_HTTP_RC=$?
-run_as p7hostile curl -sS -o "$OUT/hostile_direct_provider_forged.body" -w '%{http_code}\n' \
+run_as p7hostile curl -sS -w '\n%{http_code}\n' \
   -X POST "$PROVIDER_ENDPOINT/cas" -H 'Authorization: Bearer forged' -H 'Content-Type: application/json' --data '{}' \
-  > "$OUT/hostile_direct_provider_forged.status" 2> "$OUT/hostile_direct_provider_forged.stderr"
+  > "$OUT/hostile_direct_provider_forged.response" 2> "$OUT/hostile_direct_provider_forged.stderr"
 HOSTILE_HTTP_RC=$?
-run_as p7requester curl -sS -o "$OUT/requester_direct_state_noauth.body" -w '%{http_code}\n' \
+run_as p7requester curl -sS -w '\n%{http_code}\n' \
   "$PROVIDER_ENDPOINT/state?resource=X" \
-  > "$OUT/requester_direct_state_noauth.status" 2> "$OUT/requester_direct_state_noauth.stderr"
+  > "$OUT/requester_direct_state_noauth.response" 2> "$OUT/requester_direct_state_noauth.stderr"
 REQUESTER_GET_RC=$?
 set -e
 [[ "$REQUESTER_HTTP_RC" -eq 0 ]]
 [[ "$HOSTILE_HTTP_RC" -eq 0 ]]
 [[ "$REQUESTER_GET_RC" -eq 0 ]]
-grep -qx '401' "$OUT/requester_direct_provider_noauth.status"
-grep -qx '401' "$OUT/hostile_direct_provider_forged.status"
-grep -qx '401' "$OUT/requester_direct_state_noauth.status"
+[[ "$(tail -n 1 "$OUT/requester_direct_provider_noauth.response")" = "401" ]]
+[[ "$(tail -n 1 "$OUT/hostile_direct_provider_forged.response")" = "401" ]]
+[[ "$(tail -n 1 "$OUT/requester_direct_state_noauth.response")" = "401" ]]
 
 # Unauthorized peer cannot turn self-declared identity or credential-shaped payload into authority.
 run_as p7hostile python "$CLIENT" --socket "$SOCKET" --request \
