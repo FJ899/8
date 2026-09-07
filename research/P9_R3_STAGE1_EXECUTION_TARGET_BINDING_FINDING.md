@@ -49,7 +49,7 @@ then:
 
 must **not** mutate T2 under the historical T1 admission.
 
-The Stage-1 workflow for this record is intentionally expected-red on the frozen P9-R2 implementation. A failing security assertion is the executable evidence for this finding.
+The Stage-1 workflow for this record is intentionally expected-red on the frozen P9-R2 implementation. A failing security assertion is the executable evidence for this finding. A green Stage-1 run would mean the counterexample was not reproduced and this stage would remain incomplete.
 
 ## Repair boundary for continuation
 
