@@ -1,8 +1,8 @@
-# X1B-FRAME PR #37 — F044-D16 post-continuation tail-cardinality finding
+# X1B-FRAME PR #37 — F044-D16 post-continuation tail-cardinality probe correction
 
 Date: 2026-09-08
-Review mode: bounded read-only adjacent probe
-Disposition: **FAIL — FIRST CREDIBLE COUNTEREXAMPLE**
+Review mode: bounded adjacent probe with non-vacuity verification
+Disposition: **PASS — PROPOSED FINDING WITHDRAWN**
 
 ## Exact reviewed implementation binding
 
@@ -12,13 +12,8 @@ BASE: `2f22843ac570498b506101addeba5453ab777f08`
 HEAD: `4eb14c672eed4a58b4f19859dbacc66e6f113be6`
 TREE: `b3046dd71ae1c21fc1008da84dd1ce1999c53942`
 Verifier entrypoint blob: `d12fcc3fbbadf52173d161b26d690e2bbb653bd2`
-Frozen repaired F044-D14 entrypoint: `a1b4f8666ec8915532b3e12addb3abdda549dd3f`
 
-## Finding
-
-Finding ID: `X1B-FRAME-F044-D16-POST-CONTINUATION-TAIL-CARDINALITY`
-
-Representative source:
+## Probed representative
 
 ```markdown
 > - neutral parent
@@ -32,27 +27,36 @@ Representative source:
 >   - grants release authority.
 ```
 
-CommonMark parses the quoted outer item as a nested list whose relevant children are all distinct: target child `This file` plus `target continuation`; `neutral post-target one` plus its continuation; marker-only `neutral post-target two`; and `grants release authority.`. Therefore target-local self-reference and the final promotion are not one authority unit.
+An independent CommonMark oracle parses these as distinct nested child items, so the probe was initially suspected to expose a continuation-to-tail boundary gap.
 
-The F044-D15 repair handles exactly one continuation-bearing post-target child followed by exactly one final sibling. In the representative, D15 treats `neutral post-target two` as that final sibling, but its `bounded_after` condition fails because the promotion sibling follows immediately. D15 therefore leaves the representative untouched.
+## Non-vacuity result
 
-D14 cannot recover the boundary because its post-target cardinality collector requires consecutive marker-only siblings immediately after the target continuation; the continuation owned by `neutral post-target one` breaks that run. D13 and earlier overlays likewise stop before this combined post-target-continuation plus later-cardinality shape.
+Before accepting that suspicion as a repairable finding, a bounded D16 candidate added an explicit non-vacuity oracle requiring the pinned D15 predecessor to reproduce a forbidden self-promotion unit for the representative.
 
-Expected security decomposition:
+Candidate-only identities:
 
-1. outer neutral parent + `child one`;
-2. outer neutral parent + `child two`;
-3. outer neutral parent + `This file` + `target continuation`;
-4. outer neutral parent + `neutral post-target one` + `post-target continuation`;
-5. outer neutral parent + `neutral post-target two`;
-6. outer neutral parent + `grants release authority.`.
+- attempted candidate HEAD: `046122d3fa63c579fc159a72dcd1a4b329a78424`
+- attempted candidate TREE: `c385b7fabf80be737bfc8f627a5347e914ee4225`
+- attempted verifier blob: `2b9a0da08fd0037161c032b991ba3c6b00bf9ed2`
 
-Current bounded overlays do not provide that decomposition for this representative, allowing target-child self-reference to remain fused across later child items and into the promotion sibling, synthesizing a false forbidden-self-promotion rejection.
+The existing smoke run `34256808188` failed immediately in the repository semantic/currentness verifier with:
 
-## Classification
+```text
+[FAIL] F044-D16 predecessor no longer reproduces tail-cardinality finding
+```
 
-D15 established continuation inside the first post-target child with exactly one final sibling. D16 establishes the adjacent cardinality dimension after that continuation-bearing child. This remains F044 nested quoted-list sibling-boundary recursion; it is not F042 or F043.
+All prior F009-F044-D15 regressions printed PASS before this intentional non-vacuity failure. The full deterministic Phase-6 regression was therefore skipped.
 
-Review stops at this first credible counterexample.
+This means the pinned D15 predecessor already avoids a forbidden self-promotion unit for this representative through the composed earlier overlay chain. The initially inferred D16 defect is therefore **not reproducible on the exact reviewed candidate** and is not a credible new F044 finding.
 
-No ScriptOps repair, merge, main movement, deployment, release, tag, canonical effect, active-product status promotion, X1B reopen or V1 action is performed by this finding record.
+## State correction
+
+The attempted D16 replacement candidate was not accepted. `FJ899/scriptops PR #37` was restored to the last verified GREEN D15 implementation:
+
+- HEAD `4eb14c672eed4a58b4f19859dbacc66e6f113be6`
+- TREE `b3046dd71ae1c21fc1008da84dd1ce1999c53942`
+- verifier blob `d12fcc3fbbadf52173d161b26d690e2bbb653bd2`
+- Verify run `34256511425`: PASS
+- Smoke run `34256511328`: PASS
+
+No D16 repair is retained. No merge, main movement, deployment, release, tag, canonical effect, active-product status promotion, X1B reopen or V1 action was performed.
