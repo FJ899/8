@@ -1,0 +1,117 @@
+name: X1B-FRAME PR37 fresh final entity-normalization review
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact frozen ScriptOps candidate
+        uses: actions/checkout@v4
+        with:
+          repository: FJ899/scriptops
+          ref: 5e80aef5262c21e79c8518936c74cae0ce1be5f0
+          path: target
+          fetch-depth: 1
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Verify exact frozen binding and clean checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          HEAD=$(git -C target rev-parse HEAD)
+          TREE=$(git -C target rev-parse 'HEAD^{tree}')
+          VERIFIER=$(git -C target hash-object scripts/verify_repository.py)
+          printf 'HEAD=%s\nTREE=%s\nVERIFIER=%s\n' "$HEAD" "$TREE" "$VERIFIER"
+          test "$HEAD" = "5e80aef5262c21e79c8518936c74cae0ce1be5f0"
+          test "$TREE" = "8d95d16bf6c3a5b5acf72323fcda77bba1fa4172"
+          test "$VERIFIER" = "d82237f6ab6546dbf1a5c4eeddc9e26c906cdf05"
+          test -z "$(git -C target status --porcelain=v1)"
+      - name: Run first fresh-final semantic-normalization case
+        env:
+          PYTHONDONTWRITEBYTECODE: '1'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/entity_normalization_probe.py" <<'PY'
+          from __future__ import annotations
+
+          import html
+          import pathlib
+          import sys
+
+          target = pathlib.Path("target").resolve()
+          sys.path.insert(0, str(target / "scripts"))
+          import verify_repository as current
+
+          control = "This file grants release authority.\n"
+          test = "This&#32;file grants release authority.\n"
+
+          control_decoded = html.unescape(control)
+          test_decoded = html.unescape(test)
+          equivalent = test_decoded == control_decoded
+
+          control_units = current.core._authority_soft_wrapped_units(control)
+          test_units = current.core._authority_soft_wrapped_units(test)
+          control_claim = current.core.layer_b_self_promotion_claim(control)
+          test_claim = current.core.layer_b_self_promotion_claim(test)
+
+          def rejected(source: str) -> tuple[bool, str]:
+              try:
+                  current.core.validate_layer_b_non_authority_text(
+                      "acceptance/inert.md", source
+                  )
+              except current.core.VerificationError as exc:
+                  return True, str(exc)
+              return False, "ACCEPTED"
+
+          control_rejected, control_reason = rejected(control)
+          test_rejected, test_reason = rejected(test)
+
+          print(f"CONTROL_SOURCE={control!r}")
+          print(f"TEST_SOURCE={test!r}")
+          print(f"DECODED_EQUIVALENT={equivalent}")
+          print(f"CONTROL_DECODED={control_decoded!r}")
+          print(f"TEST_DECODED={test_decoded!r}")
+          print(f"CONTROL_UNITS={control_units!r}")
+          print(f"TEST_UNITS={test_units!r}")
+          print(f"CONTROL_CLAIM={control_claim!r}")
+          print(f"TEST_CLAIM={test_claim!r}")
+          print(f"CONTROL_REJECTED={control_rejected}")
+          print(f"CONTROL_REASON={control_reason!r}")
+          print(f"TEST_REJECTED={test_rejected}")
+          print(f"TEST_REASON={test_reason!r}")
+
+          control_ok = (
+              equivalent
+              and len(control_units) == 1
+              and control_claim is not None
+              and control_rejected
+          )
+          print(f"CONTROL_STRUCTURAL_OK={control_ok}")
+          if not control_ok:
+              print("RESULT=CONTROL_INVALID_FINAL_REVIEW_NOT_ESTABLISHED")
+              raise SystemExit(2)
+
+          if test_claim is not None and test_rejected:
+              print("RESULT=PASS_FRESH_FINAL_ENTITY_NORMALIZATION_CASE")
+              raise SystemExit(0)
+
+          print("RESULT=FAIL_REPRODUCIBLE_FRESH_FINAL_CHARACTER_REFERENCE_NORMALIZATION")
+          raise SystemExit(1)
+          PY
+          python -B "$RUNNER_TEMP/entity_normalization_probe.py"
+      - name: Confirm frozen target remained unmodified
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          STATUS=$(git -C target status --porcelain=v1)
+          printf 'TARGET_STATUS=%q\n' "$STATUS"
+          test -z "$STATUS"
