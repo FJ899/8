@@ -1,0 +1,131 @@
+name: Exact frozen HTML-comment runtime probe
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/exact-runtime-html-comment-probe.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout exact frozen ScriptOps candidate
+        uses: actions/checkout@v4
+        with:
+          repository: FJ899/scriptops
+          ref: 9c8c866131272ece7b292d9cc86a9e07c152000f
+          path: target
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Verify exact frozen binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          HEAD=$(git -C target rev-parse HEAD)
+          TREE=$(git -C target rev-parse 'HEAD^{tree}')
+          VERIFIER=$(git -C target hash-object scripts/verify_repository.py)
+          printf 'HEAD=%s\nTREE=%s\nVERIFIER=%s\n' "$HEAD" "$TREE" "$VERIFIER"
+          test "$HEAD" = "9c8c866131272ece7b292d9cc86a9e07c152000f"
+          test "$TREE" = "08d76ac49e2fc5557540fce1a85bedd53e856d3e"
+          test "$VERIFIER" = "b4597fcaa8466ac5cb3368c0471589189a9325bd"
+          test -z "$(git -C target status --porcelain=v1)"
+
+      - name: Run exactly one external HTML-comment regression
+        env:
+          PYTHONDONTWRITEBYTECODE: "1"
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/html_comment_probe.py" <<'PY'
+          from __future__ import annotations
+
+          import pathlib
+          import sys
+
+          target = pathlib.Path("target").resolve()
+          sys.path.insert(0, str(target / "scripts"))
+
+          import verify_repository as current
+
+          parser = current.core._authority_soft_wrapped_units
+
+          control = (
+              "> This file\n"
+              "> # neutral heading\n"
+              "> grants release authority.\n"
+          )
+          test = (
+              "> This file\n"
+              "> <!-- neutral comment -->\n"
+              "> grants release authority.\n"
+          )
+
+          control_units = parser(control)
+          test_units = parser(test)
+
+          print(f"CONTROL_UNITS={len(control_units)}")
+          for index, unit in enumerate(control_units, 1):
+              print(f"CONTROL_UNIT_{index}={unit!r}")
+
+          print(f"TEST_UNITS={len(test_units)}")
+          for index, unit in enumerate(test_units, 1):
+              print(f"TEST_UNIT_{index}={unit!r}")
+
+          control_norm = [unit.upper() for unit in control_units]
+          test_norm = [unit.upper() for unit in test_units]
+
+          control_ok = (
+              len(control_units) == 3
+              and "THIS FILE" in control_norm[0]
+              and "# NEUTRAL HEADING" in control_norm[1]
+              and "GRANTS RELEASE AUTHORITY" in control_norm[2]
+              and not any(
+                  "THIS FILE" in unit and "GRANTS RELEASE AUTHORITY" in unit
+                  for unit in control_norm
+              )
+          )
+
+          test_ok = (
+              len(test_units) == 3
+              and "THIS FILE" in test_norm[0]
+              and "<!-- NEUTRAL COMMENT -->" in test_norm[1]
+              and "GRANTS RELEASE AUTHORITY" in test_norm[2]
+              and not any(
+                  "THIS FILE" in unit and "GRANTS RELEASE AUTHORITY" in unit
+                  for unit in test_norm
+              )
+          )
+
+          print(f"CONTROL_STRUCTURAL_OK={control_ok}")
+          print(f"TEST_STRUCTURAL_OK={test_ok}")
+
+          if not control_ok:
+              print("RESULT=HARNESS_INVALID_CONTROL_NOT_GREEN")
+              raise SystemExit(2)
+
+          if test_ok:
+              print("RESULT=PASS_EXPLICIT_QUOTE_INNER_HTML_COMMENT_BOUNDARY")
+              raise SystemExit(0)
+
+          print("RESULT=FAIL_REPRODUCIBLE_EXPLICIT_QUOTE_INNER_HTML_COMMENT_BOUNDARY")
+          raise SystemExit(1)
+          PY
+
+          python -B "$RUNNER_TEMP/html_comment_probe.py"
+
+      - name: Confirm target checkout remained unmodified
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          STATUS=$(git -C target status --porcelain=v1)
+          printf 'TARGET_STATUS=%q\n' "$STATUS"
+          test -z "$STATUS"
