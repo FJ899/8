@@ -1,0 +1,186 @@
+name: Exact frozen F044 recursion x multiple-parent runtime probe
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/x1b-frame-pr37-f044-recursion-multiple-parents-runtime.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout exact frozen ScriptOps candidate
+        uses: actions/checkout@v4
+        with:
+          repository: FJ899/scriptops
+          ref: 9d171c41c935110c24baae3b0d834f094359b506
+          path: target
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Verify exact frozen binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          HEAD=$(git -C target rev-parse HEAD)
+          TREE=$(git -C target rev-parse 'HEAD^{tree}')
+          VERIFIER=$(git -C target hash-object scripts/verify_repository.py)
+          printf 'HEAD=%s\nTREE=%s\nVERIFIER=%s\n' "$HEAD" "$TREE" "$VERIFIER"
+          test "$HEAD" = "9d171c41c935110c24baae3b0d834f094359b506"
+          test "$TREE" = "22485b3373e7dbeea4a3631c75a843a798facf99"
+          test "$VERIFIER" = "cea0a8951479170eaed50b205f654599aac35118"
+          test -z "$(git -C target status --porcelain=v1)"
+
+      - name: Run exactly one recursion x multiple-parent interaction regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/interaction_probe.py" <<'PY'
+          from __future__ import annotations
+
+          import pathlib
+          import sys
+
+          target = pathlib.Path("target").resolve()
+          sys.path.insert(0, str(target / "scripts"))
+
+          import verify_repository as current
+
+          parser = current.core._authority_soft_wrapped_units
+          claim = current.core.layer_b_self_promotion_claim
+
+          control_a = (
+              "- neutral outer owner\n"
+              "  - neutral outer owner\n"
+              "    > - neutral quoted parent A\n"
+              "    >   - This file\n"
+              "    >     ordinary continuation\n"
+              "    >   - grants release authority.\n"
+          )
+
+          control_b = (
+              "- neutral outer owner\n"
+              "  > - neutral quoted parent A\n"
+              "  >   - This file\n"
+              "  >     ordinary continuation\n"
+              "  > - neutral quoted parent B\n"
+              "  >   - grants release authority.\n"
+          )
+
+          test = (
+              "- neutral outer owner\n"
+              "  - neutral outer owner\n"
+              "    > - neutral quoted parent A\n"
+              "    >   - This file\n"
+              "    >     ordinary continuation\n"
+              "    > - neutral quoted parent B\n"
+              "    >   - grants release authority.\n"
+          )
+
+          def units_for(label: str, source: str) -> list[str]:
+              units = parser(source)
+              print(f"{label}_UNITS={len(units)}")
+              for index, unit in enumerate(units, 1):
+                  print(f"{label}_UNIT_{index}={unit!r}")
+              claims = sum(1 for unit in units if claim(unit))
+              print(f"{label}_CLAIMS={claims}")
+              return units
+
+          def norm(units: list[str]) -> list[str]:
+              return [unit.upper() for unit in units]
+
+          def no_fusion(units: list[str]) -> bool:
+              return not any(
+                  "THIS FILE" in unit.upper()
+                  and "GRANTS RELEASE AUTHORITY" in unit.upper()
+                  for unit in units
+              )
+
+          a = units_for("CONTROL_A", control_a)
+          b = units_for("CONTROL_B", control_b)
+          t = units_for("TEST", test)
+
+          an = norm(a)
+          bn = norm(b)
+          tn = norm(t)
+
+          control_a_ok = (
+              len(a) == 2
+              and all(unit.count("NEUTRAL OUTER OWNER") == 2 for unit in an)
+              and all("NEUTRAL QUOTED PARENT A" in unit for unit in an)
+              and "THIS FILE" in an[0]
+              and "ORDINARY CONTINUATION" in an[0]
+              and "GRANTS RELEASE AUTHORITY" not in an[0]
+              and "GRANTS RELEASE AUTHORITY" in an[1]
+              and "THIS FILE" not in an[1]
+              and no_fusion(a)
+              and not any(claim(unit) for unit in a)
+          )
+
+          control_b_ok = (
+              len(b) == 2
+              and all(unit.count("NEUTRAL OUTER OWNER") == 1 for unit in bn)
+              and "NEUTRAL QUOTED PARENT A" in bn[0]
+              and "NEUTRAL QUOTED PARENT B" not in bn[0]
+              and "THIS FILE" in bn[0]
+              and "ORDINARY CONTINUATION" in bn[0]
+              and "GRANTS RELEASE AUTHORITY" not in bn[0]
+              and "NEUTRAL QUOTED PARENT B" in bn[1]
+              and "NEUTRAL QUOTED PARENT A" not in bn[1]
+              and "GRANTS RELEASE AUTHORITY" in bn[1]
+              and "THIS FILE" not in bn[1]
+              and no_fusion(b)
+              and not any(claim(unit) for unit in b)
+          )
+
+          print(f"CONTROL_A_STRUCTURAL_OK={control_a_ok}")
+          print(f"CONTROL_B_STRUCTURAL_OK={control_b_ok}")
+
+          if not control_a_ok or not control_b_ok:
+              print("RESULT=CONTROL_INVALID_INTERACTION_NOT_ESTABLISHED")
+              raise SystemExit(2)
+
+          test_ok = (
+              len(t) == 2
+              and all(unit.count("NEUTRAL OUTER OWNER") == 2 for unit in tn)
+              and "NEUTRAL QUOTED PARENT A" in tn[0]
+              and "NEUTRAL QUOTED PARENT B" not in tn[0]
+              and "THIS FILE" in tn[0]
+              and "ORDINARY CONTINUATION" in tn[0]
+              and "GRANTS RELEASE AUTHORITY" not in tn[0]
+              and "NEUTRAL QUOTED PARENT B" in tn[1]
+              and "NEUTRAL QUOTED PARENT A" not in tn[1]
+              and "GRANTS RELEASE AUTHORITY" in tn[1]
+              and "THIS FILE" not in tn[1]
+              and no_fusion(t)
+              and not any(claim(unit) for unit in t)
+          )
+
+          print(f"TEST_STRUCTURAL_OK={test_ok}")
+          if test_ok:
+              print("RESULT=PASS_RECURSION_X_MULTIPLE_QUOTED_PARENTS")
+              raise SystemExit(0)
+
+          print("RESULT=FAIL_REPRODUCIBLE_RECURSION_X_MULTIPLE_QUOTED_PARENTS")
+          raise SystemExit(1)
+          PY
+
+          python -B "$RUNNER_TEMP/interaction_probe.py"
+
+      - name: Confirm target checkout remained unmodified
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          STATUS=$(git -C target status --porcelain=v1)
+          printf 'TARGET_STATUS=%q\n' "$STATUS"
+          test -z "$STATUS"
