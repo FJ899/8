@@ -1,0 +1,121 @@
+name: X1B-FRAME PR37 fresh final restart review
+
+on:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Checkout exact frozen ScriptOps candidate
+        uses: actions/checkout@v4
+        with:
+          repository: FJ899/scriptops
+          ref: 4c7684189602f12ca95f9363ebdba09d1876827b
+          path: target
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Verify exact frozen binding and clean checkout
+        run: |
+          set -euo pipefail
+          HEAD=$(git -C target rev-parse HEAD)
+          TREE=$(git -C target rev-parse 'HEAD^{tree}')
+          VERIFIER=$(git -C target hash-object scripts/verify_repository.py)
+          printf 'HEAD=%s\nTREE=%s\nVERIFIER=%s\n' "$HEAD" "$TREE" "$VERIFIER"
+          test "$HEAD" = "4c7684189602f12ca95f9363ebdba09d1876827b"
+          test "$TREE" = "c28d6b399cdf39cc2d84370a99a4fd5179ed84ed"
+          test "$VERIFIER" = "9699fbe49d570f5b2e6ff0a9ec1ee569d93a2704"
+          test -z "$(git -C target status --porcelain=v1)"
+
+      - name: Run first blind final-state adversarial case
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/fresh_final_restart_case.py" <<'PY'
+          from __future__ import annotations
+          import pathlib
+          import sys
+
+          target = pathlib.Path("target").resolve()
+          sys.path.insert(0, str(target / "scripts"))
+          import verify_repository as current
+
+          parser = current.core._authority_soft_wrapped_units
+          claim = current.core.layer_b_self_promotion_claim
+
+          control = (
+              "> This file\n"
+              "> <!-- neutral comment -->\n"
+              "> grants release authority.\n"
+          )
+          test = (
+              "> This file\n"
+              "lazy continuation\n"
+              "> <!-- neutral comment -->\n"
+              "> grants release authority.\n"
+          )
+
+          def inspect(label: str, source: str):
+              units = parser(source)
+              claims = sum(1 for unit in units if claim(unit))
+              print(f"{label}_SOURCE={source!r}")
+              print(f"{label}_UNITS={len(units)}")
+              for i, unit in enumerate(units, 1):
+                  print(f"{label}_UNIT_{i}={unit!r}")
+              print(f"{label}_CLAIMS={claims}")
+              return units, claims
+
+          c_units, c_claims = inspect("CONTROL", control)
+          control_ok = (
+              len(c_units) == 3
+              and "THIS FILE" in c_units[0].upper()
+              and "<!-- NEUTRAL COMMENT -->" in c_units[1].upper()
+              and "GRANTS RELEASE AUTHORITY" in c_units[2].upper()
+              and c_claims == 0
+          )
+          print(f"CONTROL_STRUCTURAL_OK={control_ok}")
+          if not control_ok:
+              print("RESULT=CONTROL_INVALID_FINAL_RESTART_REVIEW_NOT_ESTABLISHED")
+              raise SystemExit(2)
+
+          t_units, t_claims = inspect("TEST", test)
+          test_ok = (
+              len(t_units) == 3
+              and "THIS FILE" in t_units[0].upper()
+              and "LAZY CONTINUATION" in t_units[0].upper()
+              and "<!-- NEUTRAL COMMENT -->" in t_units[1].upper()
+              and "GRANTS RELEASE AUTHORITY" in t_units[2].upper()
+              and not any(
+                  "THIS FILE" in unit.upper()
+                  and "GRANTS RELEASE AUTHORITY" in unit.upper()
+                  for unit in t_units
+              )
+              and t_claims == 0
+          )
+          print(f"TEST_STRUCTURAL_OK={test_ok}")
+          if test_ok:
+              print("RESULT=PASS_FRESH_FINAL_RESTART_LAZY_QUOTE_TO_HTML_COMMENT")
+              raise SystemExit(0)
+
+          print("RESULT=FAIL_REPRODUCIBLE_FRESH_FINAL_RESTART_LAZY_QUOTE_TO_HTML_COMMENT")
+          raise SystemExit(1)
+          PY
+          python -B "$RUNNER_TEMP/fresh_final_restart_case.py"
+
+      - name: Confirm frozen target remained unmodified
+        if: always()
+        run: |
+          set -euo pipefail
+          STATUS=$(git -C target status --porcelain=v1)
+          printf 'TARGET_STATUS=%q\n' "$STATUS"
+          test -z "$STATUS"
