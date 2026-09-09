@@ -1,0 +1,207 @@
+name: X1B-FRAME PR37 full known regression replay post lazy-ATX repair
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/x1b-frame-pr37-full-known-regression-replay-post-lazy-atx.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  replay:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout exact frozen ScriptOps candidate
+        uses: actions/checkout@v4
+        with:
+          repository: FJ899/scriptops
+          ref: 4c7684189602f12ca95f9363ebdba09d1876827b
+          path: target
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install existing ScriptOps v2 dependency
+        run: python -m pip install pyyaml
+
+      - name: Verify exact frozen binding and clean checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          HEAD=$(git -C target rev-parse HEAD)
+          TREE=$(git -C target rev-parse 'HEAD^{tree}')
+          VERIFIER=$(git -C target hash-object scripts/verify_repository.py)
+          printf 'HEAD=%s\nTREE=%s\nVERIFIER=%s\n' "$HEAD" "$TREE" "$VERIFIER"
+          test "$HEAD" = "4c7684189602f12ca95f9363ebdba09d1876827b"
+          test "$TREE" = "c28d6b399cdf39cc2d84370a99a4fd5179ed84ed"
+          test "$VERIFIER" = "9699fbe49d570f5b2e6ff0a9ec1ee569d93a2704"
+          test -z "$(git -C target status --porcelain=v1)"
+
+      - name: Compile frozen regression path
+        run: cd target && python -m compileall -q phase6 scripts/verify_repository.py tests/test_phase6_scriptops_smoke.py
+
+      - name: Run complete accumulated in-repo verifier corpus
+        run: cd target && python scripts/verify_repository.py
+
+      - name: Run full deterministic Phase 6 regression
+        run: cd target && python -m unittest discover -s tests -p 'test_phase6_*.py' -v
+
+      - name: Replay external-only known regressions
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/external_known_replay.py" <<'PY'
+          from __future__ import annotations
+
+          import pathlib
+          import sys
+
+          target = pathlib.Path("target").resolve()
+          sys.path.insert(0, str(target / "scripts"))
+
+          import verify_repository as current
+
+          parser = current.core._authority_soft_wrapped_units
+          claim = current.core.layer_b_self_promotion_claim
+          lazy = current.singleline._markdown_block_quote_lazy_paragraph
+
+          def no_fusion(units: list[str]) -> bool:
+              return not any(
+                  "THIS FILE" in unit.upper()
+                  and "GRANTS RELEASE AUTHORITY" in unit.upper()
+                  for unit in units
+              )
+
+          control_a = (
+              "- neutral outer owner\n"
+              "  - neutral outer owner\n"
+              "    > - neutral quoted parent A\n"
+              "    >   - This file\n"
+              "    >     ordinary continuation\n"
+              "    >   - grants release authority.\n"
+          )
+          control_b = (
+              "- neutral outer owner\n"
+              "  > - neutral quoted parent A\n"
+              "  >   - This file\n"
+              "  >     ordinary continuation\n"
+              "  > - neutral quoted parent B\n"
+              "  >   - grants release authority.\n"
+          )
+          interaction = (
+              "- neutral outer owner\n"
+              "  - neutral outer owner\n"
+              "    > - neutral quoted parent A\n"
+              "    >   - This file\n"
+              "    >     ordinary continuation\n"
+              "    > - neutral quoted parent B\n"
+              "    >   - grants release authority.\n"
+          )
+
+          a = parser(control_a)
+          b = parser(control_b)
+          t = parser(interaction)
+          an = [u.upper() for u in a]
+          bn = [u.upper() for u in b]
+          tn = [u.upper() for u in t]
+
+          a_ok = (
+              len(a) == 2
+              and all(u.count("NEUTRAL OUTER OWNER") == 2 for u in an)
+              and all("NEUTRAL QUOTED PARENT A" in u for u in an)
+              and "THIS FILE" in an[0]
+              and "ORDINARY CONTINUATION" in an[0]
+              and "GRANTS RELEASE AUTHORITY" not in an[0]
+              and "GRANTS RELEASE AUTHORITY" in an[1]
+              and "THIS FILE" not in an[1]
+              and no_fusion(a)
+              and not any(claim(u) for u in a)
+          )
+          b_ok = (
+              len(b) == 2
+              and all(u.count("NEUTRAL OUTER OWNER") == 1 for u in bn)
+              and "NEUTRAL QUOTED PARENT A" in bn[0]
+              and "NEUTRAL QUOTED PARENT B" not in bn[0]
+              and "THIS FILE" in bn[0]
+              and "ORDINARY CONTINUATION" in bn[0]
+              and "GRANTS RELEASE AUTHORITY" not in bn[0]
+              and "NEUTRAL QUOTED PARENT B" in bn[1]
+              and "NEUTRAL QUOTED PARENT A" not in bn[1]
+              and "GRANTS RELEASE AUTHORITY" in bn[1]
+              and "THIS FILE" not in bn[1]
+              and no_fusion(b)
+              and not any(claim(u) for u in b)
+          )
+          t_ok = (
+              len(t) == 2
+              and all(u.count("NEUTRAL OUTER OWNER") == 2 for u in tn)
+              and "NEUTRAL QUOTED PARENT A" in tn[0]
+              and "NEUTRAL QUOTED PARENT B" not in tn[0]
+              and "THIS FILE" in tn[0]
+              and "ORDINARY CONTINUATION" in tn[0]
+              and "GRANTS RELEASE AUTHORITY" not in tn[0]
+              and "NEUTRAL QUOTED PARENT B" in tn[1]
+              and "NEUTRAL QUOTED PARENT A" not in tn[1]
+              and "GRANTS RELEASE AUTHORITY" in tn[1]
+              and "THIS FILE" not in tn[1]
+              and no_fusion(t)
+              and not any(claim(u) for u in t)
+          )
+
+          print(f"INTERACTION_CONTROL_A_OK={a_ok}")
+          print(f"INTERACTION_CONTROL_B_OK={b_ok}")
+          print(f"INTERACTION_TEST_OK={t_ok}")
+          if not a_ok or not b_ok:
+              print("RESULT=CONTROL_ORACLE_DRIFT_RECURSION_X_MULTIPLE_PARENTS")
+              raise SystemExit(2)
+          if not t_ok:
+              print("RESULT=REGRESSION_REOPENED_RECURSION_X_MULTIPLE_PARENTS")
+              raise SystemExit(1)
+
+          depth2 = "> > This file\ngrants release authority.\n"
+          depth3 = "> > > This file\ngrants release authority.\n"
+          d2_units = parser(depth2)
+          d3_units = parser(depth3)
+          d2_ok = (
+              lazy("> This file")
+              and len(d2_units) == 1
+              and d2_units[0].count(">") == 2
+              and "THIS FILE" in d2_units[0].upper()
+              and "GRANTS RELEASE AUTHORITY" in d2_units[0].upper()
+              and sum(1 for u in d2_units if claim(u)) == 1
+          )
+          d3_ok = (
+              lazy("> > This file")
+              and len(d3_units) == 1
+              and d3_units[0].count(">") == 3
+              and "THIS FILE" in d3_units[0].upper()
+              and "GRANTS RELEASE AUTHORITY" in d3_units[0].upper()
+              and sum(1 for u in d3_units if claim(u)) == 1
+          )
+          print(f"QUOTE_DEPTH2_OK={d2_ok}")
+          print(f"QUOTE_DEPTH3_OK={d3_ok}")
+          if not d2_ok:
+              print("RESULT=CONTROL_ORACLE_DRIFT_NESTED_QUOTE_DEPTH2")
+              raise SystemExit(2)
+          if not d3_ok:
+              print("RESULT=REGRESSION_REOPENED_NESTED_QUOTE_DEPTH3")
+              raise SystemExit(1)
+
+          print("RESULT=PASS_EXTERNAL_ONLY_KNOWN_REGRESSIONS")
+          PY
+          python -B "$RUNNER_TEMP/external_known_replay.py"
+
+      - name: Confirm frozen target remained unmodified
+        shell: bash
+        run: |
+          set -euo pipefail
+          STATUS=$(git -C target status --porcelain=v1)
+          printf 'TARGET_STATUS=%q\n' "$STATUS"
+          test -z "$STATUS"
