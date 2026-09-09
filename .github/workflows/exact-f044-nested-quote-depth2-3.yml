@@ -1,0 +1,110 @@
+name: Exact frozen F044 nested quote depth 2 to 3 runtime probe
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/exact-f044-nested-quote-depth2-3.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-24.04
+    env:
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - name: Checkout exact frozen ScriptOps candidate
+        uses: actions/checkout@v4
+        with:
+          repository: FJ899/scriptops
+          ref: 9d171c41c935110c24baae3b0d834f094359b506
+          path: target
+          fetch-depth: 1
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Verify exact frozen binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          HEAD=$(git -C target rev-parse HEAD)
+          TREE=$(git -C target rev-parse 'HEAD^{tree}')
+          VERIFIER=$(git -C target hash-object scripts/verify_repository.py)
+          printf 'HEAD=%s\nTREE=%s\nVERIFIER=%s\n' "$HEAD" "$TREE" "$VERIFIER"
+          test "$HEAD" = "9d171c41c935110c24baae3b0d834f094359b506"
+          test "$TREE" = "22485b3373e7dbeea4a3631c75a843a798facf99"
+          test "$VERIFIER" = "cea0a8951479170eaed50b205f654599aac35118"
+          test -z "$(git -C target status --porcelain=v1)"
+
+      - name: Run exactly one nested quote depth 2 to 3 regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/quote_depth_probe.py" <<'PY'
+          from __future__ import annotations
+
+          import pathlib
+          import sys
+
+          target = pathlib.Path("target").resolve()
+          sys.path.insert(0, str(target / "scripts"))
+
+          import verify_repository as current
+
+          parser = current.core._authority_soft_wrapped_units
+          claim = current.core.layer_b_self_promotion_claim
+          lazy = current.singleline._markdown_block_quote_lazy_paragraph
+
+          control = "> > This file\ngrants release authority.\n"
+          test = "> > > This file\ngrants release authority.\n"
+
+          def inspect(label: str, source: str, lazy_content: str, expected_markers: int):
+              units = parser(source)
+              claims = sum(1 for unit in units if claim(unit))
+              lazy_ok = lazy(lazy_content)
+              print(f"{label}_SOURCE={source!r}")
+              print(f"{label}_LAZY={lazy_ok}")
+              print(f"{label}_UNITS={len(units)}")
+              for index, unit in enumerate(units, 1):
+                  print(f"{label}_UNIT_{index}={unit!r}")
+              print(f"{label}_CLAIMS={claims}")
+
+              structural_ok = (
+                  lazy_ok
+                  and len(units) == 1
+                  and units[0].count(">") == expected_markers
+                  and "THIS FILE" in units[0].upper()
+                  and "GRANTS RELEASE AUTHORITY" in units[0].upper()
+                  and claims == 1
+              )
+              print(f"{label}_STRUCTURAL_OK={structural_ok}")
+              return structural_ok
+
+          control_ok = inspect("CONTROL", control, "> This file", 2)
+          if not control_ok:
+              print("RESULT=CONTROL_INVALID_DEPTH3_NOT_ESTABLISHED")
+              raise SystemExit(2)
+
+          test_ok = inspect("TEST", test, "> > This file", 3)
+          if test_ok:
+              print("RESULT=PASS_NESTED_BLOCK_QUOTE_DEPTH_2_TO_3")
+              raise SystemExit(0)
+
+          print("RESULT=FAIL_REPRODUCIBLE_NESTED_BLOCK_QUOTE_DEPTH_2_TO_3")
+          raise SystemExit(1)
+          PY
+
+          python -B "$RUNNER_TEMP/quote_depth_probe.py"
+
+      - name: Confirm target checkout remained unmodified
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          STATUS=$(git -C target status --porcelain=v1)
+          printf 'TARGET_STATUS=%q\n' "$STATUS"
+          test -z "$STATUS"
